@@ -1,4 +1,4 @@
-# rpawomaster
+# RPaWoMaster
 
 一个使用rust构建的密码管理器。
 
@@ -12,7 +12,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/rpawomaster.git
+git clone https://github.com/SidneyLYZhang/rpawomaster.git
 cd rpawomaster
 
 # 构建项目
@@ -56,6 +56,7 @@ cargo run -- --help
 ## LICENSE
 
 Copyright (c) 2025 Sidney Zhang <zly@lyzhang.me>
+
 rpawomaster is licensed under Mulan PSL v2.
 
 [Mulan PSL v2](LICENSE)
