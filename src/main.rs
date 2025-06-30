@@ -16,13 +16,37 @@ use rand::seq::SliceRandom;
 use rand::rngs::OsRng;
 use zxcvbn::zxcvbn;
 use std::collections::HashSet;
+use rsa::RsaPrivateKey;
+use rsa::pkcs8::EncodePrivateKey;
+use rsa::pkcs8::EncodePublicKey;
+use rsa::pkcs8::LineEnding;
+use aes_gcm::Aes256Gcm;
+use aes_gcm::KeyInit;
+use aes_gcm::Nonce;
+use pbkdf2::pbkdf2;
+use sha2::Sha256;
+use hmac::Hmac;
+use serde::{Serialize, Deserialize};
+use serde_json::json;
+use std::fs;
+use std::path::PathBuf;
+use dirs::config_dir;
+use rpassword::read_password;
+use hex::encode;
+use rand::Rng;
+use std::io::{self, Write};
+use chrono::Local;
 
 #[derive(Debug, Parser)]
 #[command(name = "rpawomaster")]
 #[command(about = "A secure password manager written in Rust", long_about = None)]
 enum Cli {
     /// Initialize a new password vault
-    Init,
+    Init {
+        /// Path to configuration file to import
+        #[arg(short, long)]
+        import: Option<String>,
+    },
 
     /// Generate a new random password
     Gen(GenArgs),
@@ -107,6 +131,24 @@ impl From<GenArgs> for PasswordOptions {
             avoid_confusion: args.avoid_confusion,
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ConfigFile {
+    username: String,
+    encrypted_private_key: String,
+    public_key: String,
+    vault_name: String,
+    vault_path: String,
+    default_vault: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct VaultMetadata {
+    name: String,
+    path: String,
+    created_at: String,
+    last_modified: String,
 }
 
 fn generate_password(options: &PasswordOptions) -> Result<String, String> {
@@ -224,13 +266,212 @@ fn assess_password_strength(password: &str) -> (String, u8, String) {
     (rating, score as u8, feedback)
 }
 
+fn read_password_from_stdin(prompt: &str) -> Result<String, String> {
+    print!("{}", prompt);
+    io::stdout().flush().map_err(|e| format!("Failed to flush output: {}", e))?;
+    read_password().map_err(|e| format!("Failed to read password: {}", e))
+}
+
+fn generate_rsa_keypair() -> Result<(String, String), String> {
+    let mut rng = OsRng;
+    let private_key = RsaPrivateKey::new(&mut rng, 2048)
+        .map_err(|e| format!("Failed to generate RSA key pair: {}", e))?;
+    let public_key = private_key.to_public_key();
+
+    let private_key_pem = private_key.to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| format!("Failed to serialize private key: {}", e))?;
+    let public_key_pem = public_key.to_public_key_pem(LineEnding::LF)
+        .map_err(|e| format!("Failed to serialize public key: {}", e))?;
+
+    Ok((private_key_pem, public_key_pem))
+}
+
+fn encrypt_private_key(private_key: &str, core_password: &str) -> Result<String, String> {
+    // 生成随机盐和nonce
+    let mut salt = [0u8; 16];
+    let mut nonce_bytes = [0u8; 12];
+    let mut rng = OsRng;
+    rng.fill_bytes(&mut salt);
+    rng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    // 使用PBKDF2派生密钥
+    let mut key = [0u8; 32];
+    pbkdf2::<Hmac<Sha256>>(
+        core_password.as_bytes(),
+        &salt,
+        100000,
+        &mut key
+    );
+
+    // 加密私钥
+    let cipher = Aes256Gcm::new(&key.into());
+    let ciphertext = cipher.encrypt(nonce, private_key.as_bytes())
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+
+    // 组合盐、nonce和密文并编码为hex
+    let mut result = Vec::new();
+    result.extend_from_slice(&salt);
+    result.extend_from_slice(&nonce_bytes);
+    result.extend_from_slice(&ciphertext);
+    Ok(encode(&result))
+}
+
+fn get_config_dir() -> Result<PathBuf, String> {
+    config_dir()
+        .ok_or_else(|| "Could not determine configuration directory".to_string())?
+        .join("rPaWoMaster")
+}
+
+fn interactive_init() -> Result<(), String> {
+    // 获取用户输入
+    print!("Enter username: ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut username = String::new();
+    io::stdin().read_line(&mut username).map_err(|e| e.to_string())?;
+    let username = username.trim();
+    if username.is_empty() {
+        return Err("Username cannot be empty".to_string());
+    }
+
+    let core_password = read_password_from_stdin("Enter core password: ")?;
+    let confirm_password = read_password_from_stdin("Confirm core password: ")?;
+    if core_password != confirm_password {
+        return Err("Passwords do not match".to_string());
+    }
+
+    // 评估密码强度
+    let (rating, score, feedback) = assess_password_strength(&core_password);
+    println!("Core password strength: {} (score: {}/4)", rating, score);
+    if score < 3 {
+        println!("Warning: Weak core password. {}", feedback);
+        print!("Continue with weak password? [y/N]: ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        let mut response = String::new();
+        io::stdin().read_line(&mut response).map_err(|e| e.to_string())?;
+        if !response.trim().eq_ignore_ascii_case("y") {
+            return Err("Initialization cancelled".to_string());
+        }
+    }
+
+    print!("Enter vault name (default: MyVault): ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut vault_name = String::new();
+    io::stdin().read_line(&mut vault_name).map_err(|e| e.to_string())?;
+    let vault_name = vault_name.trim();
+    let vault_name = if vault_name.is_empty() { "MyVault" } else { vault_name };
+
+    print!("Enter vault save location (default: {{config_dir}}/vaults/{}): ", vault_name);
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut vault_path = String::new();
+    io::stdin().read_line(&mut vault_path).map_err(|e| e.to_string())?;
+    let vault_path = vault_path.trim();
+    let default_vault_path = get_config_dir()?
+        .join("vaults")
+        .join(vault_name);
+    let vault_path = if vault_path.is_empty() {
+        default_vault_path.to_string_lossy().into_owned()
+    } else {
+        vault_path.to_string()
+    };
+
+    // 创建密码库目录
+    let vault_path_buf = PathBuf::from(&vault_path);
+    fs::create_dir_all(&vault_path_buf)
+        .map_err(|e| format!("Failed to create vault directory: {}", e))?;
+
+    // 生成RSA密钥对
+    println!("Generating RSA key pair...");
+    let (private_key_pem, public_key_pem) = generate_rsa_keypair()?;
+
+    // 加密私钥
+    println!("Encrypting private key...");
+    let encrypted_private_key = encrypt_private_key(&private_key_pem, &core_password)?;
+
+    // 创建配置文件
+    let config = ConfigFile {
+        username: username.to_string(),
+        encrypted_private_key,
+        public_key: public_key_pem,
+        vault_name: vault_name.to_string(),
+        vault_path: vault_path.clone(),
+        default_vault: true,
+    };
+
+    // 保存配置文件
+    let config_dir = get_config_dir()?;
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    let config_file_path = config_dir.join(format!("{}.json", username));
+    let config_file = fs::File::create(&config_file_path)
+        .map_err(|e| format!("Failed to create config file: {}", e))?;
+    serde_json::to_writer_pretty(config_file, &config)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+
+    // 创建密码库元数据
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let metadata = VaultMetadata {
+        name: vault_name.to_string(),
+        path: vault_path,
+        created_at: now.clone(),
+        last_modified: now,
+    };
+    let metadata_path = vault_path_buf.join("metadata.json");
+    let metadata_file = fs::File::create(&metadata_path)
+        .map_err(|e| format!("Failed to create metadata file: {}", e))?;
+    serde_json::to_writer_pretty(metadata_file, &metadata)
+        .map_err(|e| format!("Failed to write metadata file: {}", e))?;
+
+    Ok(())
+}
+
+fn import_config(import_path: &str) -> Result<(), String> {
+    // 读取导入的配置文件
+    let config_data = fs::read_to_string(import_path)
+        .map_err(|e| format!("Failed to read import file: {}", e))?;
+    let config: ConfigFile = serde_json::from_str(&config_data)
+        .map_err(|e| format!("Invalid config file format: {}", e))?;
+
+    // 确保配置目录存在
+    let config_dir = get_config_dir()?;
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+
+    // 保存配置文件
+    let config_file_path = config_dir.join(format!("{}.json", config.username));
+    if config_file_path.exists() {
+        return Err(format!("Config file for user '{}' already exists", config.username));
+    }
+
+    let config_file = fs::File::create(&config_file_path)
+        .map_err(|e| format!("Failed to create config file: {}", e))?;
+    serde_json::to_writer_pretty(config_file, &config)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+
+    // 确保密码库目录存在
+    let vault_path = PathBuf::from(&config.vault_path);
+    fs::create_dir_all(&vault_path)
+        .map_err(|e| format!("Failed to create vault directory: {}", e))?;
+
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
 
     match cli {
-        Cli::Init => {
-            println!("Initializing new password vault...");
-            // TODO: Implement vault initialization
+        Cli::Init { import } => {
+            if let Some(import_path) = import {
+                match import_config(&import_path) {
+                    Ok(_) => println!("Successfully imported password vault from {}", import_path),
+                    Err(e) => eprintln!("Failed to import vault: {}", e),
+                }
+            } else {
+                match interactive_init() {
+                    Ok(_) => println!("Password vault initialized successfully"),
+                    Err(e) => eprintln!("Initialization failed: {}", e),
+                }
+            }
         }
         Cli::Gen(args) => {
             let options = PasswordOptions::from(args);

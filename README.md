@@ -40,11 +40,13 @@ cargo run -- --help
 | 密码强度检验 | ✅ 已完成 | 2025-06-30 |
 | 密码库初始化 | 📋 未开始 |  |
 | 增加密码 | 📋 未开始 |  |
+| 支持保存[动态令牌](https://2fasolution.com/index.html) | 📋 未开始 |  |
 | 更新密码 | 📋 未开始 |  |
 | 查找密码 | 📋 未开始 |  |
 | 单元测试 | 📋 未开始 |  |
 | 文档完善 | 📋 未开始 |  |
 | 发布v1.0版本 | 📋 未开始 |  |
+
 
 ## 贡献指南
 1. Fork本仓库
@@ -57,6 +59,4 @@ cargo run -- --help
 
 Copyright (c) 2025 Sidney Zhang <zly@lyzhang.me>
 
-rpawomaster is licensed under Mulan PSL v2.
-
-[Mulan PSL v2](LICENSE)
+rpawomaster is licensed under [Mulan PSL v2](LICENSE) .
