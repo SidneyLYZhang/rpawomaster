@@ -17,7 +17,7 @@ use rand::rngs::OsRng;
 use zxcvbn::zxcvbn;
 use std::collections::HashSet;
 use rsa::RsaPrivateKey;
-use rsa::pkcs8::EncodePrivateKey;
+use rsa::pkcs8::{EncodePrivateKey, DecodePrivateKey};
 use rsa::pkcs8::EncodePublicKey;
 use rsa::pkcs8::LineEnding;
 use aes_gcm::Aes256Gcm;
@@ -38,6 +38,8 @@ use rand::RngCore;
 use std::io::{self, Write};
 use chrono::Local;
 
+mod pwsmanager;
+
 #[derive(Debug, Parser)]
 #[command(name = "rpawomaster")]
 #[command(about = "A secure password manager written in Rust", long_about = None)]
@@ -53,10 +55,21 @@ enum Cli {
     Gen(GenArgs),
 
     /// Add a password to the vault
-    Add,
+    Add {
+        /// User to add password for
+        #[arg(short, long)]
+        user: Option<String>,
+        
+        /// Vault to add password to
+        #[arg(short, long)]
+        vault: Option<String>,
+    },
 
     /// Update an existing password
     Update,
+
+    /// list all existing passwords
+    List,
 
     /// Search passwords in the vault
     Search,
@@ -611,66 +624,287 @@ fn import_config(import_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn main() {
+fn main() -> Result<(), String> {
     let cli = Cli::parse();
 
     match cli {
         Cli::Init { import } => {
             if let Some(import_path) = import {
-                match import_config(&import_path) {
-                    Ok(_) => println!("Successfully imported password vault from {}", import_path),
-                    Err(e) => eprintln!("Failed to import vault: {}", e),
-                }
+                import_config(&import_path)
             } else {
-                match interactive_init() {
-                    Ok(_) => println!("Password vault initialized successfully"),
-                    Err(e) => eprintln!("Initialization failed: {}", e),
-                }
-            }
-        }
-        Cli::Gen(args) => {
-            let options = PasswordOptions::from(args);
-            match generate_password(&options) {
-                Ok(password) => {
-                let (rating, score, _feedback) = assess_password_strength(&password);
-                println!("Generated password: {}", password);
-                println!("Password strength: {} (score: {}/4)", rating, score);
-            },
-                Err(e) => eprintln!("Error generating password: {}", e),
-            }
-        }
-        Cli::Add => {
-            println!("Adding password to vault...");
-            // TODO: Implement add functionality
-        }
-        Cli::Update => {
-            println!("Updating password...");
-            // TODO: Implement update functionality
-        }
-        Cli::Testpass(args) => {
-            let (rating, score, feedback) = assess_password_strength(&args.password);
-            let url_safe = check_url_safe(&args.password);
-            let confusing_chars = check_confusing_chars(&args.password);
-
-            println!("Password: {}", args.password);
-            println!("Strength rating: {} (score: {}/4)", rating, score);
-            if !feedback.is_empty() {
-                println!("Improvement suggestions: {}", feedback);
-            }
-            if args.check_url_safe {
-                println!("URL-safe: {}", if url_safe { "Yes" } else { "No" });
-            }
-            if args.check_confusion {
-                if confusing_chars.is_empty() {
-                    println!("No visually confusing characters");
-                } else {
-                    println!("Visually confusing characters: {:?}", confusing_chars);
-                }
+                interactive_init()
             }
         },
+        Cli::Gen(args) => {
+            let options = PasswordOptions::from(args);
+            let password = generate_password(&options)?;
+            println!("Generated password: {}", password);
+            Ok(())
+        },
+        Cli::Add { user, vault } => {
+            add_password_interactive(user, vault)
+        },
+        Cli::Update => {
+            Ok(())
+        },
+        Cli::List => {
+            Ok(())
+        },
         Cli::Search => {
-            println!("Searching passwords...");
-            // TODO: Implement search functionality
+            Ok(())
+        },
+        Cli::Testpass(args) => {
+            let (rating, score, feedback) = assess_password_strength(&args.password);
+            println!("Password strength: {} (score: {}/4)", rating, score);
+            if !feedback.is_empty() {
+                println!("Suggestions: {}", feedback);
+            }
+
+            if args.check_url_safe {
+                let is_safe = check_url_safe(&args.password);
+                println!("URL-safe: {}", if is_safe { "Yes" } else { "No" });
+            }
+
+            if args.check_confusion {
+                let confusing = check_confusing_chars(&args.password);
+                if !confusing.is_empty() {
+                    println!("Potentially confusing characters: {:?}", confusing);
+                } else {
+                    println!("No confusing characters detected");
+                }
+            }
+            Ok(())
         }
     }
+}
+
+fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>) -> Result<(), String> {
+    // 获取配置目录
+    let config_dir = get_config_dir()?;
+    
+    // 列出所有现有用户
+    let user_files = fs::read_dir(&config_dir)
+        .map_err(|e| format!("Failed to read config directory: {}", e))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                path.file_stem()?.to_str().map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    
+    // 处理用户选择
+    let username = if let Some(user) = user_arg {
+        user
+    } else if user_files.is_empty() {
+        return Err("No users found. Please initialize a user first with `rpawomaster init`".to_string());
+    } else {
+        println!("Available users:");
+        for (i, user) in user_files.iter().enumerate() {
+            println!("{}. {}", i + 1, user);
+        }
+        
+        print!("Enter user number to select: ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        let mut response = String::new();
+        io::stdin().read_line(&mut response).map_err(|e| e.to_string())?;
+        let selection: usize = response.trim().parse()
+            .map_err(|_| "Invalid selection. Please enter a number.".to_string())?;
+        
+        if selection < 1 || selection > user_files.len() {
+            return Err(format!("Invalid selection. Please enter a number between 1 and {}", user_files.len()));
+        }
+        
+        user_files[selection - 1].clone()
+    };
+    
+    // 读取用户配置
+    let config_file_path = config_dir.join(format!("{}.json", username));
+    let config_data = fs::read_to_string(&config_file_path)
+        .map_err(|e| format!("Failed to read user config: {}", e))?;
+    let config: ConfigFile = serde_json::from_str(&config_data)
+        .map_err(|e| format!("Failed to parse user config: {}", e))?;
+    
+    // 验证核心密码
+    let core_password = read_password_from_stdin(&format!("Enter core password for user '{}': ", username))?;
+    let private_key_pem = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+    let private_key = RsaPrivateKey::from_pkcs8_pem(&private_key_pem)
+                                        .map_err(|e| format!("Failed to parse private key: {}", e))?;
+    let public_key = private_key.to_public_key();
+    
+    // 确定密码库
+    let vault_name = if let Some(vault) = vault_arg {
+        vault
+    } else {
+        // 查找默认密码库
+        config.vaults.iter()
+            .find(|v| v.is_default)
+            .map(|v| v.name.clone())
+            .ok_or("No default vault found for user".to_string())?
+    };
+    
+    // 查找密码库路径
+    let vault = config.vaults.iter()
+        .find(|v| v.name == vault_name)
+        .ok_or(format!("Vault '{}' not found for user", vault_name))?;
+    
+    // 获取密码库数据库路径
+    let db_path = PathBuf::from(&vault.path).join("passwords.db");
+    let db_path_str = db_path.to_string_lossy().into_owned();
+    
+    // 初始化数据库（如果不存在）
+    pwsmanager::init_database(&db_path_str).map_err(|e| e.to_string())?;
+    
+    // 创建密码命令处理器
+    let handler = pwsmanager::PasswordCommandHandler::new(
+        db_path_str.clone(),
+        public_key
+    );
+    
+    // 获取密码信息
+    print!("Enter password name/identifier: ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut name = String::new();
+    io::stdin().read_line(&mut name).map_err(|e| e.to_string())?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Password name cannot be empty".to_string());
+    }
+    
+    print!("Enter username for this password (optional): ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut username_field = String::new();
+    io::stdin().read_line(&mut username_field).map_err(|e| e.to_string())?;
+    let username_field = if username_field.trim().is_empty() { None } else { Some(username_field.trim().to_string()) };
+    
+    print!("Enter URL (optional): ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut url = String::new();
+    io::stdin().read_line(&mut url).map_err(|e| e.to_string())?;
+    let url = if url.trim().is_empty() { None } else { Some(url.trim().to_string()) };
+    
+    print!("Enter expiry days (0 for never, default: 90): ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut expiry_days_str = String::new();
+    io::stdin().read_line(&mut expiry_days_str).map_err(|e| e.to_string())?;
+    let expiry_days = if expiry_days_str.trim().is_empty() {
+        90
+    } else {
+        expiry_days_str.trim().parse()
+            .map_err(|_| "Invalid expiry days. Please enter a number.".to_string())?
+    };
+    
+    print!("Enter note (optional): ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut note = String::new();
+    io::stdin().read_line(&mut note).map_err(|e| e.to_string())?;
+    let note = if note.trim().is_empty() { None } else { Some(note.trim().to_string()) };
+    
+    // 处理密码生成或输入
+    print!("Do you want to generate a password or enter manually? [g/m] (default: g): ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut password_choice = String::new();
+    io::stdin().read_line(&mut password_choice).map_err(|e| e.to_string())?;
+    let password_choice = password_choice.trim().to_lowercase();
+    
+    let (manual_password, generation_policy) = if password_choice == "m" {
+        let password = read_password_from_stdin("Enter password: ")?;
+        let confirm = read_password_from_stdin("Confirm password: ")?;
+        if password != confirm {
+            return Err("Passwords do not match".to_string());
+        }
+        (Some(password), None)
+    } else {
+        // 获取密码生成策略
+        let mut policy = pwsmanager::PasswordGenerationPolicy::default();
+        
+        print!("Include uppercase letters? [Y/n] (default: Y): ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        policy.include_uppercase = input.trim().to_lowercase() != "n";
+        
+        print!("Include lowercase letters? [Y/n] (default: Y): ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        input.clear();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        policy.include_lowercase = input.trim().to_lowercase() != "n";
+        
+        print!("Include numbers? [Y/n] (default: Y): ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        input.clear();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        policy.include_numbers = input.trim().to_lowercase() != "n";
+        
+        print!("Include special characters? [Y/n] (default: Y): ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        input.clear();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        policy.include_special_chars = input.trim().to_lowercase() != "n";
+        
+        print!("Make URL-safe? [y/N] (default: N): ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        input.clear();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        policy.url_safe = input.trim().to_lowercase() == "y";
+        
+        print!("Exclude confusing characters? [Y/n] (default: Y): ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        input.clear();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        policy.exclude_confusing_chars = input.trim().to_lowercase() != "n";
+        
+        print!("Enter password length (default: 16): ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        input.clear();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        if !input.trim().is_empty() {
+            policy.length = input.trim().parse()
+                .map_err(|_| "Invalid length. Please enter a number.".to_string())?;
+        }
+        
+        let options = PasswordOptions {
+            length: policy.length,
+            include_uppercase: policy.include_uppercase,
+            include_lowercase: policy.include_lowercase,
+            include_numbers: policy.include_numbers,
+            include_special: policy.include_special_chars,
+            url_safe: policy.url_safe,
+            avoid_confusion: policy.exclude_confusing_chars,
+        };
+        let password = generate_password(&options)?;
+        (Some(password), Some(policy))
+    };
+    
+    // 创建添加密码选项
+    let options = pwsmanager::AddPasswordOptions {
+        user: username.clone(),
+        vault: Some(vault_name.clone()),
+        name,
+        username: username_field,
+        url,
+        expiry_days,
+        note,
+        manual_password,
+        generation_policy,
+    };
+    
+    // 添加密码
+    let entry = match handler.add_password(options) {
+        Ok(result) => result,
+        Err(e) => return Err(format!("Failed to add password: {}", e)),
+    };
+    
+    println!(
+        "Successfully added password '{}' to vault '{}' for user '{}' (ID: {})",
+        entry.name,
+        vault_name,
+        username,
+        entry.id
+    );
+    
+    Ok(())
 }
