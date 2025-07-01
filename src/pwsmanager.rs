@@ -14,10 +14,12 @@
 
 use chrono::{Duration, Local};
 use rand::rngs::OsRng;
-use aes_gcm;
-use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
+
+use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
+
+use anyhow::anyhow;
 
 // 密码生成策略配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,16 +120,16 @@ impl PasswordCommandHandler {
     /// 成功时返回创建的密码条目，失败时返回错误
     pub fn add_password(&self, options: AddPasswordOptions) -> Result<PasswordEntry> {
         // 获取密码库（必须由调用方指定）
-        let vault_id = options.vault.ok_or("Vault must be specified")?;
+        let vault_id = options.vault.ok_or(anyhow!("Vault must be specified"))?;
         
         // 获取密码（必须由调用方提供）
-        let password = options.manual_password.ok_or("Password must be provided")?;
+        let password = options.manual_password.ok_or(rusqlite::Error::Other("Password must be provided".to_string()))?;
         
         // 获取生成策略（必须由调用方提供）
-        let generation_policy = options.generation_policy.ok_or("Generation policy must be provided")?;
+        let generation_policy = options.generation_policy.ok_or(rusqlite::Error::Other("Generation policy must be provided".to_string()))?;
         
         // 加密密码
-        let password_encrypted = self.encrypt_password(&password)?;
+        let password_encrypted = self.encrypt_password(&password).map_err(|e| rusqlite::Error::Other(e))?;
         
         // 计算有效期
         let expiry_date = if options.expiry_days == 0 {
@@ -188,7 +190,7 @@ impl PasswordCommandHandler {
     }
 
     /// 更新密码（创建新版本）
-    pub fn update_password(&self, options: UpdatePasswordOptions) -> Result<PasswordEntry> {
+    pub fn update_password(&self, _options: UpdatePasswordOptions) -> Result<PasswordEntry> {
         // TODO: 实现密码更新逻辑
         // 1. 查找现有记录获取生成策略
         // 2. 使用相同策略生成新密码
@@ -198,13 +200,13 @@ impl PasswordCommandHandler {
     }
 
     /// 删除密码
-    pub fn delete_password(&self, options: DeletePasswordOptions) -> Result<()> {
+    pub fn delete_password(&self, _options: DeletePasswordOptions) -> Result<()> {
         // TODO: 实现密码删除逻辑
         unimplemented!()
     }
 
     /// 查找密码
-    pub fn find_passwords(&self, options: FindPasswordOptions) -> Result<Vec<PasswordEntry>> {
+    pub fn find_passwords(&self, _options: FindPasswordOptions) -> Result<Vec<PasswordEntry>> {
         // TODO: 实现密码查找逻辑
         unimplemented!()
     }
@@ -216,7 +218,7 @@ impl PasswordCommandHandler {
         // 执行RSA加密并处理错误
         let encrypted_data = self.public_key
             .encrypt(&mut rng, Pkcs1v15Encrypt, password.as_bytes())
-            .map_err(|e| format!("加密失败: {}", e))?;
+            .map_err(|e| rusqlite::Error(format!("Encryption failed: {{}}", e)))?;
 
         // 将加密后的字节数据转换为十六进制字符串
         Ok(hex::encode(encrypted_data))
