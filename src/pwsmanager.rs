@@ -14,14 +14,10 @@
 
 use chrono::{Duration, Local};
 use rand::rngs::OsRng;
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
-use sha2::Sha256;
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
-use rsa::traits::PaddingScheme;
-use base64::engine::general_purpose;
-use anyhow::anyhow;
 
 // 密码生成策略配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,41 +109,52 @@ impl PasswordCommandHandler {
         }
     }
     /// 添加新密码
+    /// 添加新密码条目到数据库
+    /// 
+    /// # 参数
+    /// * `options` - 添加密码所需的选项
+    /// 
+    /// # 返回值
+    /// 成功时返回创建的密码条目，失败时返回错误
     pub fn add_password(&self, options: AddPasswordOptions) -> Result<PasswordEntry> {
         // 获取密码库（必须由调用方指定）
-        let vault_id = options.vault.expect("Vault must be specified");
+        let vault_id = options.vault.ok_or("Vault must be specified")?;
         
         // 获取密码（必须由调用方提供）
-        let password = options.manual_password.expect("Password must be provided");
+        let password = options.manual_password.ok_or("Password must be provided")?;
         
         // 获取生成策略（必须由调用方提供）
-        let generation_policy = options.generation_policy.expect("Generation policy must be provided");
+        let generation_policy = options.generation_policy.ok_or("Generation policy must be provided")?;
         
         // 加密密码
-        let password_encrypted = self.encrypt_password(&password);
+        let password_encrypted = self.encrypt_password(&password)?;
         
         // 计算有效期
         let expiry_date = if options.expiry_days == 0 {
             None
         } else {
-            Some(Local::now() + Duration::days(options.expiry_days))
+            Some(Local::now() + Duration::days(options.expiry_days as i64))
         };
         
         // 连接数据库并插入记录
         let conn = Connection::open(&self.db_path)?;
         let created_date = Local::now();
         
-        let mut stmt = conn.prepare(
-            "INSERT INTO password_entries (user_id, vault_id, name, username, url, password_encrypted, expiry_date, created_date, note, generation_policy) 
+        const INSERT_PASSWORD_SQL: &str = "INSERT INTO password_entries (user_id, vault_id, name, username, url, password_encrypted, expiry_date, created_date, note, generation_policy) 
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) 
-             RETURNING id"
-        )?;
+             RETURNING id";
+        let mut stmt = conn.prepare(INSERT_PASSWORD_SQL)?;
         
+        // 序列化生成策略
         let generation_policy_json = serde_json::to_string(&generation_policy)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let expiry_date_str = expiry_date.map(|d| d.to_rfc3339());
-        let created_date_str = created_date.to_rfc3339();
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         
+        // 格式化日期为RFC3339字符串
+        let format_date = |date: chrono::DateTime<Local>| date.to_rfc3339();
+        let expiry_date_str = expiry_date.map(format_date);
+        let created_date_str = format_date(created_date);
+        
+        // 执行插入并返回ID
         let id: u64 = stmt.query_row(
             params![
                 options.user,
