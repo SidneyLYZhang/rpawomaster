@@ -5,247 +5,293 @@
 // |_| \_\_|   \__,_| \_/\_/ \___/|_|  |_|\__,_|___/\__\___|_|   
 //
 // Auther : Sidney Zhang <zly@lyzhang.me>
-// Date : 2025-06-30
+// Date : 2025-07-02
 // Version : 0.1.0
 // License : Mulan PSL v2
 //
 // Passwords Manager lib
 
-
-use chrono::{Duration, Local};
-use rand::rngs::OsRng;
-
-use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
-use rusqlite::{params, Connection, Result};
-use serde::{Deserialize, Serialize};
-
-use anyhow::anyhow;
+use sled::{Db, IVec};
+use uuid::Uuid;
+use chrono::{DateTime, Utc};
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
+use bincode::serde::{encode_into_slice, decode_from_slice};
+use bincode::config::standard;
 
 // 密码生成策略配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PasswordGenerationPolicy {
-    pub include_uppercase: bool,
-    pub include_lowercase: bool,
-    pub include_numbers: bool,
-    pub include_special_chars: bool,
-    pub url_safe: bool,
-    pub exclude_confusing_chars: bool,
-    pub length: usize,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum PasswordPolicy {
+    Random { length: u8, symbols: bool },
+    Memorable { words: u8, separator: char },
+    Pin { length: u8 },
+    Custom(String),
 }
 
-impl Default for PasswordGenerationPolicy {
-    fn default() -> Self {
-        PasswordGenerationPolicy {
-            include_uppercase: true,
-            include_lowercase: true,
-            include_numbers: true,
-            include_special_chars: true,
-            url_safe: false,
-            exclude_confusing_chars: true,
-            length: 16,
-        }
-    }
+// 密码历史记录
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PasswordHistory {
+    pub password: String,
+    pub created_at: DateTime<Utc>,
+    pub policy: Option<PasswordPolicy>,
 }
 
-// 密码条目结构体
-#[derive(Debug, Serialize, Deserialize)]
+// 主密码条目
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PasswordEntry {
-    pub id: u64,
-    pub user_id: String,
-    pub vault_id: String,
+    pub id: Uuid,
     pub name: String,
     pub username: Option<String>,
+    pub histories: Vec<PasswordHistory>, // 历史密码记录
+    pub current_password: String,        // 当前密码 = histories.last()
     pub url: Option<String>,
-    pub password_encrypted: String,
-    pub expiry_date: Option<chrono::DateTime<Local>>,
-    pub created_date: chrono::DateTime<Local>,
+    pub expires_at: Option<DateTime<Utc>>, // None 表示永不过期
+    pub policy: Option<PasswordPolicy>,
     pub note: Option<String>,
-    pub generation_policy: PasswordGenerationPolicy,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
-// 命令选项结构体
-#[derive(Debug)]
-pub struct AddPasswordOptions {
-    pub user: String,
-    pub vault: Option<String>,
-    pub name: String,
-    pub username: Option<String>,
-    pub url: Option<String>,
-    pub expiry_days: i64,
-    pub note: Option<String>,
-    pub manual_password: Option<String>,
-    pub generation_policy: Option<PasswordGenerationPolicy>,
+// 索引类型枚举
+#[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Debug)]
+enum IndexType {
+    Name,
+    Note,
 }
 
-#[derive(Debug)]
-pub struct UpdatePasswordOptions {
-    pub entry_id: u64,
-    // 其他更新选项...
+// 密码管理器主体
+pub struct PasswordManager {
+    db: Db,
 }
 
-#[derive(Debug)]
-pub struct DeletePasswordOptions {
-    pub entry_id: u64,
-    // 其他删除选项...
-}
+impl PasswordManager {
+    const PASSWORDS_TREE: &'static str = "passwords";
+    const INDEX_TREE: &'static str = "index";
 
-#[derive(Debug)]
-pub struct FindPasswordOptions {
-    pub name: Option<String>,
-    pub url: Option<String>,
-    // 其他查找选项...
-}
-
-/// 密码命令处理结构体
-pub struct PasswordCommandHandler {
-    db_path: String,
-    public_key: RsaPublicKey,
-}
-
-impl PasswordCommandHandler {
-    /// 创建密码命令处理器
-    pub fn new(db_path: String, rsa_public_key: RsaPublicKey) -> Self {
-        PasswordCommandHandler {
-            db_path: db_path,
-            public_key: rsa_public_key,
-        }
+    /// 初始化密码管理器
+    pub fn new(db_path: &str) -> Result<Self, sled::Error> {
+        let db = sled::open(db_path)?;
+        Ok(PasswordManager { db })
     }
-    /// 添加新密码
-    /// 添加新密码条目到数据库
-    /// 
-    /// # 参数
-    /// * `options` - 添加密码所需的选项
-    /// 
-    /// # 返回值
-    /// 成功时返回创建的密码条目，失败时返回错误
-    pub fn add_password(&self, options: AddPasswordOptions) -> Result<PasswordEntry> {
-        // 获取密码库（必须由调用方指定）
-        let vault_id = options.vault.ok_or(anyhow!("Vault must be specified"))?;
+
+    /// 添加新密码条目
+    pub fn add_password(
+        &self,
+        name: String,
+        username: Option<String>,
+        password: String,
+        url: Option<String>,
+        expires_in_days: u32, // 0 表示永不过期
+        policy: Option<PasswordPolicy>,
+        note: Option<String>,
+    ) -> Result<Uuid, Box<dyn std::error::Error>> {
+        let id = Uuid::new_v4();
+        let now = Utc::now();
         
-        // 获取密码（必须由调用方提供）
-        let password = options.manual_password.ok_or(rusqlite::Error::Other("Password must be provided".to_string()))?;
-        
-        // 获取生成策略（必须由调用方提供）
-        let generation_policy = options.generation_policy.ok_or(rusqlite::Error::Other("Generation policy must be provided".to_string()))?;
-        
-        // 加密密码
-        let password_encrypted = self.encrypt_password(&password).map_err(|e| rusqlite::Error::Other(e))?;
-        
-        // 计算有效期
-        let expiry_date = if options.expiry_days == 0 {
-            None
+        let expires_at = if expires_in_days > 0 {
+            Some(now + chrono::Duration::days(expires_in_days as i64))
         } else {
-            Some(Local::now() + Duration::days(options.expiry_days as i64))
+            None
+        };
+
+        let history = PasswordHistory {
+            password: password.clone(),
+            created_at: now,
+            policy: policy.clone(),
+        };
+
+        let entry = PasswordEntry {
+            id,
+            name: name.clone(),
+            username,
+            histories: vec![history],
+            current_password: password,
+            url,
+            expires_at,
+            policy,
+            note: note.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        // 序列化数据
+        let mut serialized = [0u8; 100];
+        encode_into_slice(&entry, &mut serialized, standard())?;
+        
+        // 获取密码树
+        let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
+        
+        // 存储主数据
+        passwords_tree.insert(id.as_bytes(), serialized.as_slice())?;
+        
+        // 更新索引
+        self.update_index(IndexType::Name, &name, id)?;
+        if let Some(note) = note {
+            self.update_index(IndexType::Note, &note, id)?;
+        }
+
+        Ok(id)
+    }
+
+    /// 删除密码条目
+    pub fn delete_password(&self, id: Uuid) -> Result<(), Box<dyn std::error::Error>> {
+        let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
+        
+        if let Some(entry) = passwords_tree.get(id.as_bytes())? {
+            let entry: PasswordEntry = decode_from_slice(&entry, standard())?.0;
+            
+            // 删除主记录
+            passwords_tree.remove(id.as_bytes())?;
+            
+            // 删除索引
+            self.remove_index(IndexType::Name, &entry.name, id)?;
+            if let Some(note) = &entry.note {
+                self.remove_index(IndexType::Note, note, id)?;
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// 更新密码（保留历史记录）
+    pub fn update_password(
+        &self,
+        id: Uuid,
+        new_password: String,
+        new_policy: Option<PasswordPolicy>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
+        
+        if let Some(entry) = passwords_tree.get(id.as_bytes())? {
+            let mut entry: PasswordEntry = decode_from_slice(&entry, standard())?.0;
+            let now = Utc::now();
+            
+            // 添加到历史记录
+            let history = PasswordHistory {
+                password: new_password.clone(),
+                created_at: now,
+                policy: new_policy.clone(),
+            };
+            
+            entry.histories.push(history);
+            entry.current_password = new_password;
+            entry.policy = new_policy;
+            entry.updated_at = now;
+            
+            // 保存更新
+            let mut serialized = [0u8; 100];
+            encode_into_slice(&entry, &mut serialized, standard())?;
+            passwords_tree.insert(id.as_bytes(), serialized.as_slice())?;
+        }
+        
+        Ok(())
+    }
+
+    /// 查询密码（支持模糊和精确查询）
+    pub fn find_passwords(
+        &self,
+        query: &str,
+        exact_match: bool,
+    ) -> Result<Vec<PasswordEntry>, Box<dyn std::error::Error>> {
+        let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
+        let mut results = Vec::new();
+        
+        for record in passwords_tree.iter() {
+            let (_, value) = record?;
+            let entry: PasswordEntry = decode_from_slice(&value, standard())?.0;
+            
+            // 检查名称和备注
+            let name_match = if exact_match {
+                entry.name == query
+            } else {
+                entry.name.contains(query)
+            };
+            
+            let note_match = entry.note.as_ref().map_or(false, |n| {
+                if exact_match {
+                    n == query
+                } else {
+                    n.contains(query)
+                }
+            });
+            
+            if name_match || note_match {
+                results.push(entry);
+            }
+        }
+        
+        Ok(results)
+    }
+
+    /// 列出所有密码
+    pub fn list_passwords(&self) -> Result<Vec<PasswordEntry>, Box<dyn std::error::Error>> {
+        let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
+        let mut entries = Vec::new();
+        
+        for record in passwords_tree.iter() {
+            let (_, value) = record?;
+            let entry: PasswordEntry = decode_from_slice(&value, standard())?.0;
+            entries.push(entry);
+        }
+        
+        Ok(entries)
+    }
+
+    // 更新索引（内部方法）
+    fn update_index(
+        &self,
+        index_type: IndexType,
+        key: &str,
+        id: Uuid,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let index_tree = self.db.open_tree(Self::INDEX_TREE)?;
+        let index_key = format!("{:?}:{}", index_type, key);
+        
+        // 获取现有索引或创建新索引
+        let mut ids = if let Some(existing) = index_tree.get(&index_key)? {
+            decode_from_slice(&existing, standard())?.0
+        } else {
+            Vec::new()
         };
         
-        // 连接数据库并插入记录
-        let conn = Connection::open(&self.db_path)?;
-        let created_date = Local::now();
+        // 添加新ID
+        if !ids.contains(&id) {
+            ids.push(id);
+            let mut serialized = [0u8; 100];
+            encode_into_slice(&ids, &mut serialized, standard())?;
+            index_tree.insert(index_key, serialized.as_slice())?;
+        }
         
-        const INSERT_PASSWORD_SQL: &str = "INSERT INTO password_entries (user_id, vault_id, name, username, url, password_encrypted, expiry_date, created_date, note, generation_policy) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) 
-             RETURNING id";
-        let mut stmt = conn.prepare(INSERT_PASSWORD_SQL)?;
-        
-        // 序列化生成策略
-        let generation_policy_json = serde_json::to_string(&generation_policy)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        
-        // 格式化日期为RFC3339字符串
-        let format_date = |date: chrono::DateTime<Local>| date.to_rfc3339();
-        let expiry_date_str = expiry_date.map(format_date);
-        let created_date_str = format_date(created_date);
-        
-        // 执行插入并返回ID
-        let id: u64 = stmt.query_row(
-            params![
-                options.user,
-                vault_id,
-                options.name,
-                options.username,
-                options.url,
-                password_encrypted,
-                expiry_date_str,
-                created_date_str,
-                options.note,
-                generation_policy_json
-            ],
-            |row| row.get(0)
-        )?;
-        
-        // 创建并返回密码条目
-        Ok(PasswordEntry {
-            id,
-            user_id: options.user,
-            vault_id,
-            name: options.name,
-            username: options.username,
-            url: options.url,
-            password_encrypted,
-            expiry_date,
-            created_date,
-            note: options.note,
-            generation_policy,
-        })
+        Ok(())
     }
 
-    /// 更新密码（创建新版本）
-    pub fn update_password(&self, _options: UpdatePasswordOptions) -> Result<PasswordEntry> {
-        // TODO: 实现密码更新逻辑
-        // 1. 查找现有记录获取生成策略
-        // 2. 使用相同策略生成新密码
-        // 3. 创建新的密码记录
-        // 4. 返回新创建的记录
-        unimplemented!()
+    // 删除索引（内部方法）
+    fn remove_index(
+        &self,
+        index_type: IndexType,
+        key: &str,
+        id: Uuid,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let index_tree = self.db.open_tree(Self::INDEX_TREE)?;
+        let index_key = format!("{:?}:{}", index_type, key);
+        
+        if let Some(existing) = index_tree.get(&index_key)? {
+            let mut ids: Vec<Uuid> = decode_from_slice(&existing, standard())?.0;
+            
+            // 移除ID
+            if let Some(pos) = ids.iter().position(|x| *x == id) {
+                ids.remove(pos);
+                
+                if ids.is_empty() {
+                    index_tree.remove(index_key)?;
+                } else {
+                    let mut serialized = [0u8; 100];
+                    encode_into_slice(&ids, &mut serialized, standard())?;
+                    index_tree.insert(index_key, serialized.as_slice())?;
+                }
+            }
+        }
+        
+        Ok(())
     }
-
-    /// 删除密码
-    pub fn delete_password(&self, _options: DeletePasswordOptions) -> Result<()> {
-        // TODO: 实现密码删除逻辑
-        unimplemented!()
-    }
-
-    /// 查找密码
-    pub fn find_passwords(&self, _options: FindPasswordOptions) -> Result<Vec<PasswordEntry>> {
-        // TODO: 实现密码查找逻辑
-        unimplemented!()
-    }
-
-    /// 加密密码
-    fn encrypt_password(&self, password: &str) -> Result<String, String> {
-        let mut rng = OsRng;
-
-        // 执行RSA加密并处理错误
-        let encrypted_data = self.public_key
-            .encrypt(&mut rng, Pkcs1v15Encrypt, password.as_bytes())
-            .map_err(|e| rusqlite::Error(format!("Encryption failed: {{}}", e)))?;
-
-        // 将加密后的字节数据转换为十六进制字符串
-        Ok(hex::encode(encrypted_data))
-    }
-}
-
-/// 初始化数据库表结构
-pub fn init_database(db_path: &str) -> Result<()> {
-    let conn = Connection::open(db_path)?;
-    
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS password_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            vault_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            username TEXT,
-            url TEXT,
-            password_encrypted TEXT NOT NULL,
-            expiry_date TEXT,
-            created_date TEXT NOT NULL,
-            note TEXT,
-            generation_policy TEXT NOT NULL,
-            UNIQUE(user_id, vault_id, name)
-        )",
-        [],
-    )?;
-    
-    Ok(())
 }

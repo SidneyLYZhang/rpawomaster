@@ -18,12 +18,8 @@ use zxcvbn::zxcvbn;
 use std::collections::HashSet;
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, DecodePrivateKey};
-use rsa::pkcs8::EncodePublicKey;
-use rsa::pkcs8::LineEnding;
-use aes_gcm::Aes256Gcm;
-use aes_gcm::AeadInPlace;
-use aes_gcm::KeyInit;
-use aes_gcm::Nonce;
+use rsa::pkcs8::{EncodePublicKey, LineEnding};
+use aes_gcm::{Aes256Gcm, AeadInPlace, KeyInit, Nonce};
 use pbkdf2::pbkdf2;
 use sha2::Sha256;
 use hmac::Hmac;
@@ -39,10 +35,14 @@ use std::io::{self, Write};
 use chrono::Local;
 
 mod pwsmanager;
+mod securecrypto;
+
+include!(concat!(env!("OUT_DIR"), "/word_data.rs"));
 
 #[derive(Debug, Parser)]
 #[command(name = "rpawomaster")]
 #[command(about = "A secure password manager written in Rust", long_about = None)]
+
 enum Cli {
     /// Initialize a new password vault
     Init {
@@ -293,20 +293,6 @@ fn read_password_from_stdin(prompt: &str) -> Result<String, String> {
     read_password().map_err(|e| format!("Failed to read password: {}", e))
 }
 
-fn generate_rsa_keypair() -> Result<(String, String), String> {
-    let mut rng = OsRng;
-    let private_key = RsaPrivateKey::new(&mut rng, 2048)
-        .map_err(|e| format!("Failed to generate RSA key pair: {}", e))?;
-    let public_key = private_key.to_public_key();
-
-    let private_key_pem = private_key.to_pkcs8_pem(LineEnding::LF)
-        .map_err(|e| format!("Failed to serialize private key: {}", e))?;
-    let public_key_pem = public_key.to_public_key_pem(LineEnding::LF)
-        .map_err(|e| format!("Failed to serialize public key: {}", e))?;
-
-    Ok((private_key_pem.to_string(), public_key_pem.to_string()))
-}
-
 fn encrypt_private_key(private_key: &str, core_password: &str) -> Result<String, String> {
     // 生成随机盐和nonce
     let mut salt = [0u8; 16];
@@ -517,7 +503,7 @@ fn interactive_init() -> Result<(), String> {
     } else {
         // 生成RSA密钥对
         println!("Generating RSA key pair...");
-        let (private_key_pem, public_key_pem) = generate_rsa_keypair()?;
+        let (private_key_pem, public_key_pem) = securecrypto::generate_rsa_keypair()?;
 
         // 加密私钥
         println!("Encrypting private key...");
