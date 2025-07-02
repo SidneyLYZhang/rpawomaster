@@ -745,9 +745,8 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
     pwsmanager::init_database(&db_path_str).map_err(|e| e.to_string())?;
     
     // 创建密码命令处理器
-    let handler = pwsmanager::PasswordCommandHandler::new(
-        db_path_str.clone(),
-        public_key
+    let handler = pwsmanager::PasswordManager::new(
+        db_path_str.clone()
     );
     
     // 获取密码信息
@@ -805,7 +804,7 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
         (Some(password), None)
     } else {
         // 获取密码生成策略
-        let mut policy = pwsmanager::PasswordGenerationPolicy::default();
+        let mut policy = pwsmanager::PasswordPolicy::default();
         
         print!("Include uppercase letters? [Y/n] (default: Y): ");
         io::stdout().flush().map_err(|e| e.to_string())?;
