@@ -4,7 +4,7 @@
 // |  _ <|  __/ (_| |\ V  V / (_) | |  | | (_| \__ \ ||  __/ |   
 // |_| \_\_|   \__,_| \_/\_/ \___/|_|  |_|\__,_|___/\__\___|_|   
 //
-// Auther : Sidney Zhang <zly@lyzhang.me>
+// Author : Sidney Zhang <zly@lyzhang.me>
 // Date : 2025-07-02
 // Version : 0.1.0
 // License : Mulan PSL v2
