@@ -11,21 +11,33 @@
 //
 // Passwords Manager lib
 
-use sled::{Db, IVec};
+use sled::{Db};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
 use bincode::serde::{encode_into_slice, decode_from_slice};
 use bincode::config::standard;
+use crate::passgen::Capitalization;
+use crate::passgen::{generate_password, generate_memorable_password, PasswordOptions, MemorablePasswordOptions};
 
 // 密码生成策略配置
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum PasswordPolicy {
-    Random { length: u8, symbols: bool },
-    Memorable { words: u8, separator: char },
-    Pin { length: u8 },
-    Custom(String),
+    Random {
+        length: usize,
+        include_uppercase: bool,
+        include_lowercase: bool,
+        include_numbers: bool,
+        include_special: bool,
+        url_safe: bool,
+        avoid_confusion: bool
+    },
+    Memorable {
+        words: u8,
+        separator: char,
+        include_numbers: bool,
+        capitalization: Capitalization
+    },
 }
 
 // 密码历史记录
@@ -79,7 +91,7 @@ impl PasswordManager {
         &self,
         name: String,
         username: Option<String>,
-        password: String,
+        password: Option<String>,
         url: Option<String>,
         expires_in_days: u32, // 0 表示永不过期
         policy: Option<PasswordPolicy>,
@@ -92,6 +104,12 @@ impl PasswordManager {
             Some(now + chrono::Duration::days(expires_in_days as i64))
         } else {
             None
+        };
+
+        let password = if let Some(policy) = &policy {
+            self.generate_from_policy(policy)?
+        } else {
+            password.ok_or("Password must be provided when no policy is specified")?
         };
 
         let history = PasswordHistory {
@@ -157,7 +175,7 @@ impl PasswordManager {
     pub fn update_password(
         &self,
         id: Uuid,
-        new_password: String,
+        new_password: Option<String>,
         new_policy: Option<PasswordPolicy>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
@@ -166,6 +184,12 @@ impl PasswordManager {
             let mut entry: PasswordEntry = decode_from_slice(&entry, standard())?.0;
             let now = Utc::now();
             
+            let new_password = if let Some(policy) = &new_policy {
+                self.generate_from_policy(policy)?
+            } else {
+                new_password.ok_or("Either new_password or new_policy must be provided")?
+            };
+
             // 添加到历史记录
             let history = PasswordHistory {
                 password: new_password.clone(),
@@ -293,5 +317,31 @@ impl PasswordManager {
         }
         
         Ok(())
+    }
+
+    fn generate_from_policy(&self, policy: &PasswordPolicy) -> Result<String, String> {
+        match policy {
+            PasswordPolicy::Random { length, include_uppercase, include_lowercase, include_numbers, include_special, url_safe, avoid_confusion } => {
+                let options = PasswordOptions {
+                    length: *length,
+                    include_uppercase: *include_uppercase,
+                    include_lowercase: *include_lowercase,
+                    include_numbers: *include_numbers,
+                    include_special: *include_special,
+                    url_safe: *url_safe,
+                    avoid_confusion: *avoid_confusion,
+                };
+                generate_password(&options)
+            }
+            PasswordPolicy::Memorable { words, separator, include_numbers, capitalization } => {
+                let options = MemorablePasswordOptions {
+                    word_count: *words as usize,
+                    separator: *separator,
+                    include_numbers: *include_numbers,
+                    capitalization: capitalization.clone(),
+                };
+                generate_memorable_password(&options)
+            }
+        }
     }
 }

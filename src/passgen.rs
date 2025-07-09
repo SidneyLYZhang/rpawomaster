@@ -17,17 +17,33 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 use zxcvbn::zxcvbn;
 use zxcvbn::Score;
+use serde::{Serialize, Deserialize};
 use crate::GenArgs;
+use std::fmt;
+use clap::ValueEnum;
 
 // 引入编译生成的单词列表
 include!(concat!(env!("OUT_DIR"), "/word_data.rs"));
 
 // 单词大写方式枚举
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ValueEnum)]
 pub enum Capitalization {
+    #[value(name = "none")]
     NoCapitalization,
+    #[value(name = "camel")]
     CamelCase,
+    #[value(name = "random")]
     RandomCase,
+}
+
+impl fmt::Display for Capitalization {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Capitalization::NoCapitalization => write!(f, "none"),
+            Capitalization::CamelCase => write!(f, "camel"),
+            Capitalization::RandomCase => write!(f, "random"),
+        }
+    }
 }
 
 // 记忆密码生成选项
@@ -50,14 +66,14 @@ impl Default for MemorablePasswordOptions {
     }
 }
 
-struct PasswordOptions {
-    length: usize,
-    include_uppercase: bool,
-    include_lowercase: bool,
-    include_numbers: bool,
-    include_special: bool,
-    url_safe: bool,
-    avoid_confusion: bool,
+pub struct PasswordOptions {
+    pub length: usize,
+    pub include_uppercase: bool,
+    pub include_lowercase: bool,
+    pub include_numbers: bool,
+    pub include_special: bool,
+    pub url_safe: bool,
+    pub avoid_confusion: bool,
 }
 
 impl From<GenArgs> for PasswordOptions {
@@ -224,24 +240,28 @@ pub fn check_confusing_chars(password: &str) -> Vec<char> {
     password.chars().filter(|c| confusing_chars.contains(c)).collect()
 }
 
-pub fn assess_password_strength(password: &str) -> (String, u8, String) {
+pub fn assess_password_strength(password: &str) -> Result<(String, u8, String), String> {
     let strength_result = zxcvbn(password, &[]);
     let score = strength_result.score();
     let feedback = strength_result.feedback().map_or_else(
         || String::new(),
-        |f| f.suggestions().iter().map(|s| s.to_string()).collect::<Vec<_>>().join(" ")
+        |f| {
+            let suggestions: Vec<String> = f.suggestions().iter().map(|s| s.to_string()).collect();
+            let warnings: Vec<String> = f.warning().map_or_else(Vec::new, |w| vec![w.to_string()]);
+            [warnings, suggestions].concat().join("; ")
+        }
     );
 
     // 确定安全评级
     let rating = match score {
-        Score::Zero => "极弱",
-        Score::One => "弱",
-        Score::Two => "中等",
-        Score::Three => "强",
-        Score::Four => "极强",
+        Score::Zero => "极低",
+        Score::One => "低",
+        Score::Two => "中",
+        Score::Three => "高",
+        Score::Four => "极高",
         _ => "未知",
     }.to_string();
 
-    (rating, score as u8, feedback)
+    Ok((rating, score as u8, feedback))
 }
 

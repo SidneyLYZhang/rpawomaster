@@ -11,7 +11,7 @@
 //
 // A secure password manager written in Rust.
 
-use clap::Parser;
+use clap::{Parser, Args};
 use rand::seq::SliceRandom;
 use rand::rngs::OsRng;
 use zxcvbn::zxcvbn;
@@ -34,11 +34,11 @@ use rand::RngCore;
 use std::io::{self, Write};
 use chrono::Local;
 
+use crate::passgen::Capitalization;
+
 mod pwsmanager;
 mod securecrypto;
 mod passgen;
-
-include!(concat!(env!("OUT_DIR"), "/word_data.rs"));
 
 #[derive(Debug, Parser)]
 #[command(name = "rpawomaster")]
@@ -52,8 +52,11 @@ enum Cli {
         import: Option<String>,
     },
 
-    /// Generate a new random password
-    Gen(GenArgs),
+    /// Generate a new password
+    Gen {
+        #[command(subcommand)]
+        subcommand: GenSubcommand,
+    },
 
     /// Add a password to the vault
     Add {
@@ -80,6 +83,65 @@ enum Cli {
 }
 
 #[derive(Debug, Parser)]
+enum GenSubcommand {
+    /// Generate a random password
+    Random(GenRandomArgs),
+    
+    /// Generate a memorable password
+    Memorable(GenMemorableArgs),
+}
+
+#[derive(Debug, Parser)]
+struct GenRandomArgs {
+    /// Length of the password
+    #[arg(short, long, default_value_t = 12)]
+    length: usize,
+
+    /// Exclude uppercase letters
+    #[arg(long, default_value_t = false)]
+    no_uppercase: bool,
+
+    /// Exclude lowercase letters
+    #[arg(long, default_value_t = false)]
+    no_lowercase: bool,
+
+    /// Exclude numbers
+    #[arg(long, default_value_t = false)]
+    no_numbers: bool,
+
+    /// Exclude special characters
+    #[arg(long, default_value_t = false)]
+    no_special: bool,
+
+    /// Make password URL-safe
+    #[arg(short = 's', long, default_value_t = false)]
+    url_safe: bool,
+
+    /// Avoid visually confusing characters
+    #[arg(short = 'c', long, default_value_t = false)]
+    avoid_confusion: bool,
+}
+
+#[derive(Debug, Parser)]
+struct GenMemorableArgs {
+    /// Number of words in the password
+    #[arg(short, long, default_value_t = 4)]
+    words: usize,
+
+    /// Separator character between words
+    #[arg(short, long, default_value_t = '-')]
+    separator: char,
+
+    /// Include numbers in the password
+    #[arg(short, long, default_value_t = false)]
+    include_numbers: bool,
+
+    /// Capitalization style (none, camel, random)
+    #[arg(short, long, default_value_t = Capitalization::CamelCase)]
+    capitalization: Capitalization,
+}
+
+#[derive(Debug, Args, Serialize, Deserialize)]
 struct TestpassArgs {
     /// Password to test
     password: String,
@@ -93,7 +155,7 @@ struct TestpassArgs {
     check_confusion: bool,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Args, Serialize, Deserialize)]
 struct GenArgs {
     /// Length of the password
     #[arg(short, long, default_value_t = 12)]
@@ -156,7 +218,7 @@ struct VaultMetadata {
     last_modified: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Vault {
     name: String,
     path: String,
@@ -280,7 +342,7 @@ fn interactive_init() -> Result<(), String> {
 
     // 评估新用户密码强度
     if !existing_user {
-        let (rating, score, feedback) = assess_password_strength(&core_password);
+        let (rating, score, feedback) = passgen::assess_password_strength(&core_password)?;
         println!("Core password strength: {} (score: {}/4)", rating, score);
         if score < 3 {
             println!("Warning: Weak core password. {}", feedback);
@@ -507,11 +569,42 @@ fn main() -> Result<(), String> {
                 interactive_init()
             }
         },
-        Cli::Gen(args) => {
-            let options = PasswordOptions::from(args);
-            let password = generate_password(&options)?;
-            println!("Generated password: {}", password);
-            Ok(())
+        Cli::Gen { subcommand } => match subcommand {
+            GenSubcommand::Random(args) => {
+                let options = passgen::PasswordOptions {
+                    length: args.length,
+                    include_uppercase: !args.no_uppercase,
+                    include_lowercase: !args.no_lowercase,
+                    include_numbers: !args.no_numbers,
+                    include_special: !args.no_special,
+                    url_safe: args.url_safe,
+                    avoid_confusion: args.avoid_confusion,
+                };
+                let password = passgen::generate_password(&options)?;
+                let (rating, score, feedback) = passgen::assess_password_strength(&password)?;
+                println!("Generated random password: {}", password);
+                println!("密码安全等级: {} (评分: {})", rating, score);
+                if score < 2 {
+                    eprintln!("⚠️ 警告: 密码安全等级较低 - {}", feedback);
+                }
+                Ok(())
+            },
+            GenSubcommand::Memorable(args) => {
+                let options = passgen::MemorablePasswordOptions {
+                    word_count: args.words,
+                    separator: args.separator,
+                    include_numbers: args.include_numbers,
+                    capitalization: args.capitalization,
+                };
+                let password = passgen::generate_memorable_password(&options)?;
+                let (rating, score, feedback) = passgen::assess_password_strength(&password)?;
+                println!("Generated memorable password: {}", password);
+                println!("密码安全等级: {} (评分: {})", rating, score);
+                if score < 2 {
+                    eprintln!("⚠️ 警告: 密码安全等级较低 - {}", feedback);
+                }
+                Ok(())
+            }
         },
         Cli::Add { user, vault } => {
             add_password_interactive(user, vault)
@@ -526,19 +619,19 @@ fn main() -> Result<(), String> {
             Ok(())
         },
         Cli::Testpass(args) => {
-            let (rating, score, feedback) = assess_password_strength(&args.password);
+            let (rating, score, feedback) = passgen::assess_password_strength(&args.password)?;
             println!("Password strength: {} (score: {}/4)", rating, score);
             if !feedback.is_empty() {
                 println!("Suggestions: {}", feedback);
             }
 
             if args.check_url_safe {
-                let is_safe = check_url_safe(&args.password);
+                let is_safe = passgen::check_url_safe(&args.password);
                 println!("URL-safe: {}", if is_safe { "Yes" } else { "No" });
             }
 
             if args.check_confusion {
-                let confusing = check_confusing_chars(&args.password);
+                let confusing = passgen::check_confusing_chars(&args.password);
                 if !confusing.is_empty() {
                     println!("Potentially confusing characters: {:?}", confusing);
                 } else {
@@ -550,6 +643,148 @@ fn main() -> Result<(), String> {
     }
 }
 
-fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>) -> Result<(), String> {
+fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>) -> Result<(), String> {
+    // Get core password
+    let core_password = read_password_from_stdin("Enter core password: ")?;
+
+    // Get config
+    let config = load_config()?;
+    let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+    let _crypto = securecrypto::SecureCrypto::from_pem_keys(&config.public_key, &private_key)
+        .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
+
+    // Select vault
+    let vault = select_vault(&config, vault_arg)?;
+    let manager = pwsmanager::PasswordManager::new(&vault.path)
+        .map_err(|e| format!("Failed to open vault: {}", e))?;
+
+    // Get password details
+    let name = prompt_input("Enter password name/label: ")?;
+    let username = prompt_input("Enter username (optional): ");
+    let url = prompt_input("Enter URL (optional): ");
+    let note = prompt_input("Enter note (optional): ");
+
+    // Generate or input password
+    let password = loop {
+        let choice = prompt_input("Generate password (g) or enter manually (m)? [g/m]: ")?;
+        match choice.trim().to_lowercase().as_str() {
+            "g" | "generate" => {
+                let password_type = prompt_input("Generate random (r) or memorable (m) password? [r/m]: ")?;
+                let password = match password_type.trim().to_lowercase().as_str() {
+                    "r" | "random" => {
+                        let length: usize = prompt_input("Enter password length: ")?.parse()
+                            .map_err(|_| "Invalid length".to_string())?;
+                        let options = passgen::PasswordOptions {
+                            length,
+                            include_uppercase: true,
+                            include_lowercase: true,
+                            include_numbers: true,
+                            include_special: true,
+                            url_safe: false,
+                            avoid_confusion: true,
+                        };
+                        passgen::generate_password(&options)?
+                    },
+                    "m" | "memorable" => {
+                        let words: usize = prompt_input("Enter number of words: ")?.parse()
+                            .map_err(|_| "Invalid number of words".to_string())?;
+                        let options = passgen::MemorablePasswordOptions {
+                            word_count: words,
+                            separator: '-',
+                            include_numbers: true,
+                            capitalization: passgen::Capitalization::CamelCase,
+                        };
+                        passgen::generate_memorable_password(&options)?
+                    },
+                    _ => {
+                        eprintln!("Invalid choice");
+                        continue;
+                    }
+                };
+                println!("Generated password: {}", password);
+                let confirm = prompt_input("Use this password? [y/n]: ")?;
+                if confirm.trim().to_lowercase() == "y" {
+                    break password;
+                }
+            },
+            "m" | "manual" => {
+                let password = read_password_from_stdin("Enter password: ")?;
+                let confirm = read_password_from_stdin("Confirm password: ")?;
+                if password == confirm {
+                    break password;
+                } else {
+                    eprintln!("Passwords do not match");
+                }
+            },
+            _ => eprintln!("Invalid choice")
+        }
+    };
+
+    // Add to vault
+    let id = manager.add_password(
+        name,
+        username.ok(),
+        Some(password),
+        url.ok(),
+        0, // Never expires
+        None,
+        note.ok(),
+    ).map_err(|e| format!("Failed to add password: {}", e))?;
+
+    println!("Password added with ID: {}", id);
     Ok(())
+}
+
+fn load_config() -> Result<ConfigFile, String> {
+    // Get username from config directory
+    let config_dir = get_config_dir()?;
+    let entries = fs::read_dir(&config_dir)
+        .map_err(|e| format!("Failed to read config directory: {}", e))?;
+
+    let mut config_files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+            config_files.push(path);
+        }
+    }
+
+    if config_files.is_empty() {
+        return Err("No configuration files found. Please run 'init' first.".to_string());
+    }
+
+    // For simplicity, take the first config file (in real scenario, handle multiple users)
+    let config_path = &config_files[0];
+    let config_data = fs::read_to_string(config_path)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+
+    serde_json::from_str(&config_data)
+        .map_err(|e| format!("Failed to parse config file: {}", e))
+}
+
+fn select_vault(config: &ConfigFile, vault_arg: Option<String>) -> Result<Vault, String> {
+    match vault_arg {
+        Some(vault_name) => {
+            config.vaults.iter()
+                .find(|v| v.name == vault_name)
+                .cloned()
+                .ok_or(format!("Vault '{}' not found", vault_name))
+        },
+        None => {
+            // Find default vault
+            config.vaults.iter()
+                .find(|v| v.is_default)
+                .cloned()
+                .ok_or("No default vault found. Please specify a vault or set a default.".to_string())
+        }
+    }
+}
+
+fn prompt_input(prompt: &str) -> Result<String, String> {
+    print!("{}", prompt);
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+    Ok(input.trim().to_string())
 }
