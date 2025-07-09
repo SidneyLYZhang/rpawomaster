@@ -33,6 +33,7 @@ use hex::encode;
 use rand::RngCore;
 use std::io::{self, Write};
 use chrono::Local;
+use base64::engine::general_purpose;
 
 use crate::passgen::Capitalization;
 
@@ -650,7 +651,7 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
     // Get config
     let config = load_config()?;
     let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
-    let _crypto = securecrypto::SecureCrypto::from_pem_keys(&config.public_key, &private_key)
+    let crypto = securecrypto::SecureCrypto::from_pem_keys(&config.public_key, &private_key)
         .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
 
     // Select vault
@@ -665,7 +666,7 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
     let note = prompt_input("Enter note (optional): ");
 
     // Generate or input password
-    let password = loop {
+    let (password, policy) = loop {
         let choice = prompt_input("Generate password (g) or enter manually (m)? [g/m]: ")?;
         match choice.trim().to_lowercase().as_str() {
             "g" | "generate" => {
@@ -683,7 +684,22 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
                             url_safe: false,
                             avoid_confusion: true,
                         };
-                        passgen::generate_password(&options)?
+                        let password = passgen::generate_password(&options)?;
+                        println!("Generated password: {}", password);
+                        let confirm = prompt_input("Use this password? [y/n]: ")?;
+                        if confirm.trim().to_lowercase() == "y" {
+                            let policy = pwsmanager::PasswordPolicy::Random {
+                                length: options.length,
+                                include_uppercase: options.include_uppercase,
+                                include_lowercase: options.include_lowercase,
+                                include_numbers: options.include_numbers,
+                                include_special: options.include_special,
+                                url_safe: options.url_safe,
+                                avoid_confusion: options.avoid_confusion,
+                            };
+                            break (password, Some(policy));
+                        }
+                        continue;
                     },
                     "m" | "memorable" => {
                         let words: usize = prompt_input("Enter number of words: ")?.parse()
@@ -694,40 +710,57 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
                             include_numbers: true,
                             capitalization: passgen::Capitalization::CamelCase,
                         };
-                        passgen::generate_memorable_password(&options)?
+                        let password = passgen::generate_memorable_password(&options)?;
+                        println!("Generated password: {}", password);
+                        let confirm = prompt_input("Use this password? [y/n]: ")?;
+                        if confirm.trim().to_lowercase() == "y" {
+                            let policy = pwsmanager::PasswordPolicy::Memorable {
+                                words: options.word_count as u8,
+                                separator: options.separator,
+                                include_numbers: options.include_numbers,
+                                capitalization: options.capitalization,
+                            };
+                            break (password, Some(policy));
+                        }
+                        continue;
                     },
                     _ => {
                         eprintln!("Invalid choice");
                         continue;
                     }
                 };
-                println!("Generated password: {}", password);
-                let confirm = prompt_input("Use this password? [y/n]: ")?;
-                if confirm.trim().to_lowercase() == "y" {
-                    break password;
-                }
+                password
             },
             "m" | "manual" => {
                 let password = read_password_from_stdin("Enter password: ")?;
                 let confirm = read_password_from_stdin("Confirm password: ")?;
                 if password == confirm {
-                    break password;
+                    break (password, None);
                 } else {
                     eprintln!("Passwords do not match");
+                    continue;
                 }
             },
-            _ => eprintln!("Invalid choice")
+            _ => {
+                eprintln!("Invalid choice");
+                continue;
+            }
         }
     };
+
+    // Encrypt password using securecrypto
+    let encrypted_bytes = crypto.encrypt_string(&password)
+        .map_err(|e| format!("Failed to encrypt password: {}", e))?;
+    let encrypted_password = general_purpose::STANDARD.encode_string(&encrypted_bytes);
 
     // Add to vault
     let id = manager.add_password(
         name,
         username.ok(),
-        Some(password),
+        Some(encrypted_password),
         url.ok(),
         0, // Never expires
-        None,
+        policy,
         note.ok(),
     ).map_err(|e| format!("Failed to add password: {}", e))?;
 
