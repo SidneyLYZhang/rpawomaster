@@ -26,7 +26,7 @@ use clap::ValueEnum;
 include!(concat!(env!("OUT_DIR"), "/word_data.rs"));
 
 // 单词大写方式枚举
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, ValueEnum)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ValueEnum, bincode::Encode, bincode::Decode)]
 pub enum Capitalization {
     #[value(name = "none")]
     NoCapitalization,
@@ -86,6 +86,19 @@ impl From<GenArgs> for PasswordOptions {
             include_special: !args.no_special,
             url_safe: args.url_safe,
             avoid_confusion: args.avoid_confusion,
+        }
+    }
+}
+impl  Default for PasswordOptions {
+    fn default() -> Self {
+        Self {
+            length: 16,
+            include_uppercase: true,
+            include_lowercase: true,
+            include_numbers: true,
+            include_special: true,
+            url_safe: false,
+            avoid_confusion: false,
         }
     }
 }

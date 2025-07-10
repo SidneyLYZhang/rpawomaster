@@ -12,11 +12,11 @@
 // A secure password manager written in Rust.
 
 use clap::{Parser, Args};
-use rand::seq::SliceRandom;
+// use rand::seq::SliceRandom;
 use rand::rngs::OsRng;
-use zxcvbn::zxcvbn;
-use std::collections::HashSet;
-use rsa::RsaPrivateKey;
+// use zxcvbn::zxcvbn;
+// use std::collections::HashSet;
+// use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, DecodePrivateKey};
 use rsa::pkcs8::{EncodePublicKey, LineEnding};
 use aes_gcm::{Aes256Gcm, AeadInPlace, KeyInit, Nonce};
@@ -25,7 +25,7 @@ use sha2::Sha256;
 use hmac::Hmac;
 use serde::{Serialize, Deserialize};
 use serde_json;
-use std::fs;
+use std::{fs, option};
 use std::path::PathBuf;
 use dirs::config_dir;
 use rpassword::read_password;
@@ -33,6 +33,7 @@ use hex::encode;
 use rand::RngCore;
 use std::io::{self, Write};
 use chrono::Local;
+use base64::Engine;
 use base64::engine::general_purpose;
 
 use crate::passgen::Capitalization;
@@ -74,7 +75,15 @@ enum Cli {
     Update,
 
     /// list all existing passwords
-    List,
+    List {
+        /// User to filter passwords by
+        #[arg(short, long)]
+        user: Option<String>,
+        
+        /// Vault to list passwords from
+        #[arg(short, long)]
+        vault: Option<String>,
+    },
 
     /// Search passwords in the vault
     Search,
@@ -613,7 +622,50 @@ fn main() -> Result<(), String> {
         Cli::Update => {
             Ok(())
         },
-        Cli::List => {
+        Cli::List { user, vault } => {
+            // 获取密码库路径，优先使用命令行参数，否则使用配置文件中的默认值
+            let vault_path = match vault {
+                Some(path) => path,
+                None => {
+                    // 这里需要从配置文件读取默认密码库路径，当前使用占位符
+                    "data/default_vault".to_string()
+                }
+            };
+
+            // 初始化密码管理器
+            let manager = pwsmanager::PasswordManager::new(&vault_path)
+                                            .map_err(|e| format!("Failed to initialize password manager: {}", e))?;
+            // 获取所有密码条目
+            let entries = manager.list_passwords()
+                                                .map_err(|e| format!("Failed to list passwords: {}", e))?;
+
+            // 根据用户名筛选（如果提供）
+            let filtered_entries = if let Some(username) = user {
+                entries.into_iter()
+                    .filter(|e| e.username.as_deref() == Some(&username))
+                    .collect::<Vec<_>>()
+            } else {
+                entries
+            };
+
+            // 打印表头
+            println!("{:<30} | {:<20} | {:<40} | {:<30} | {:<20}", 
+                     "名称", "用户名", "URL", "说明", "有效期");
+            println!("{}", "-".repeat(145));
+
+            // 打印每个条目的信息
+            for entry in filtered_entries {
+                let expires = entry.expires_at.map_or("永不过期".to_string(), |d| {
+                    d.format("%Y-%m-%d").to_string()
+                });
+                println!("{:<30} | {:<20} | {:<40} | {:<30} | {:<20}",
+                         entry.name,
+                         entry.username.as_deref().unwrap_or("未设置"),
+                         entry.url.as_deref().unwrap_or("无"),
+                         entry.note.as_deref().unwrap_or("无"),
+                         expires);
+            }
+
             Ok(())
         },
         Cli::Search => {
@@ -666,26 +718,60 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
     let note = prompt_input("Enter note (optional): ");
 
     // Generate or input password
-    let (password, policy) = loop {
+    let (password, policy, expiration_days) = loop {
         let choice = prompt_input("Generate password (g) or enter manually (m)? [g/m]: ")?;
         match choice.trim().to_lowercase().as_str() {
             "g" | "generate" => {
                 let password_type = prompt_input("Generate random (r) or memorable (m) password? [r/m]: ")?;
-                let password = match password_type.trim().to_lowercase().as_str() {
+                match password_type.trim().to_lowercase().as_str() {
                     "r" | "random" => {
-                        let length: usize = prompt_input("Enter password length: ")?.parse()
-                            .map_err(|_| "Invalid length".to_string())?;
-                        let options = passgen::PasswordOptions {
-                            length,
-                            include_uppercase: true,
-                            include_lowercase: true,
-                            include_numbers: true,
-                            include_special: true,
-                            url_safe: false,
-                            avoid_confusion: true,
+                        let length_input = prompt_input("Enter password length (default 16): ")?;
+                        let length = if length_input.trim().is_empty() {
+                            16
+                        } else {
+                            length_input.parse().map_err(|_| "Invalid length".to_string())?
                         };
-                        let password = passgen::generate_password(&options)?;
-                        println!("Generated password: {}", password);
+                        let mut options = passgen::PasswordOptions::default();
+                        let mut password = String::new();
+                        // Display default policy and get user confirmation
+                        println!("Random password policy:");
+                        println!("- Length: {}", length);
+                        println!("- Includes uppercase: Yes");
+                        println!("- Includes lowercase: Yes");
+                        println!("- Includes numbers: Yes");
+                        println!("- Includes special characters: Yes");
+                        println!("- URL safe: No");
+                        println!("- Avoid confusion: No");
+                        let confirm_policy = prompt_input("Use this policy? [y/n]: ")?;
+                        if confirm_policy.trim().to_lowercase() != "y" {
+                            eprintln!("Customizing password policy...");
+                            // Get custom length
+                            let length_input = prompt_input("Enter password length (8-64): ")?;
+                            let length: usize = length_input.trim().parse().expect("Invalid number");
+                            // Get character set preferences
+                            let uppercase = prompt_input("Include uppercase letters? [y/n]: ")?.trim().to_lowercase() == "y";
+                            let lowercase = prompt_input("Include lowercase letters? [y/n]: ")?.trim().to_lowercase() == "y";
+                            let numbers = prompt_input("Include numbers? [y/n]: ")?.trim().to_lowercase() == "y";
+                            let special = prompt_input("Include special characters? [y/n]: ")?.trim().to_lowercase() == "y";
+                            let url_safe = prompt_input("Make URL safe? [y/n]: ")?.trim().to_lowercase() == "y";
+                            let avoid_confusion = prompt_input("Avoid confusing characters? [y/n]: ")?.trim().to_lowercase() == "y";
+                            // Generate password with custom policy
+                            options = passgen::PasswordOptions {
+                                length,
+                                include_uppercase: uppercase,
+                                include_lowercase: lowercase,
+                                include_numbers: numbers,
+                                include_special: special,
+                                url_safe,
+                                avoid_confusion,
+                            };
+                            password = passgen::generate_password(&options)?;
+                            println!("Generated password: {}", password);
+                        } else {
+                            let password = passgen::generate_password(&options)?;
+                            println!("Generated password: {}", password);
+                        }
+                        
                         let confirm = prompt_input("Use this password? [y/n]: ")?;
                         if confirm.trim().to_lowercase() == "y" {
                             let policy = pwsmanager::PasswordPolicy::Random {
@@ -697,21 +783,60 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
                                 url_safe: options.url_safe,
                                 avoid_confusion: options.avoid_confusion,
                             };
-                            break (password, Some(policy));
+                            let expiration_days_input = prompt_input("Enter password expiration days (0 for no expiration, default 0): ")?;
+                            let expiration_days = if expiration_days_input.trim().is_empty() {
+                                0
+                            } else {
+                                expiration_days_input.parse().map_err(|_| "Invalid expiration days".to_string())?
+                            };
+                            break (password, Some(policy), expiration_days);
                         }
                         continue;
                     },
                     "m" | "memorable" => {
-                        let words: usize = prompt_input("Enter number of words: ")?.parse()
-                            .map_err(|_| "Invalid number of words".to_string())?;
-                        let options = passgen::MemorablePasswordOptions {
-                            word_count: words,
-                            separator: '-',
-                            include_numbers: true,
-                            capitalization: passgen::Capitalization::CamelCase,
+                        let words_input = prompt_input("Enter number of words (default 4): ")?;
+                        let words = if words_input.trim().is_empty() {
+                            4
+                        } else {
+                            words_input.parse().map_err(|_| "Invalid number of words".to_string())?
                         };
-                        let password = passgen::generate_memorable_password(&options)?;
-                        println!("Generated password: {}", password);
+                        let mut options = passgen::MemorablePasswordOptions::default();
+                        let mut password = String::new();
+                        // Display memorable password policy and get confirmation
+                        println!("Memorable password policy:");
+                        println!("- Number of words: {}", words);
+                        println!("- Separator: '-'");
+                        println!("- Include numbers: Yes");
+                        println!("- Capitalization: CamelCase (first letter uppercase)");
+                        let confirm_policy = prompt_input("Use this policy? [y/n]: ")?;
+                        if confirm_policy.trim().to_lowercase() != "y" {
+                            eprintln!("Customizing memorable password policy...");
+                            // Get custom word count
+                            let words_input = prompt_input("Enter number of words (3-10): ")?;
+                            let words: usize = words_input.trim().parse().expect("Invalid number");
+                            // Get separator
+                            let separator = prompt_input("Enter separator character: ")?;
+                            let separator = separator.trim().chars().next().unwrap_or('-');
+                            // Get other preferences
+                            let include_numbers = prompt_input("Include numbers? [y/n]: ")?.trim().to_lowercase() == "y";
+                            // Get capitalization preference
+                            let capitalization_input = prompt_input("Capitalization style (none/camel/random): ")?;
+                            let capitalization = match capitalization_input.trim().to_lowercase().as_str() {
+                                "camel" => passgen::Capitalization::CamelCase,
+                                "random" => passgen::Capitalization::RandomCase,
+                                _ => passgen::Capitalization::NoCapitalization,
+                            };
+                            // Generate password with custom policy
+                            options = passgen::MemorablePasswordOptions {
+                                word_count: words,
+                                include_numbers,
+                                separator,
+                                capitalization,
+                            };
+                            password = passgen::generate_memorable_password(&options)?;
+                            println!("Generated password: {}", password);
+                        }
+                        
                         let confirm = prompt_input("Use this password? [y/n]: ")?;
                         if confirm.trim().to_lowercase() == "y" {
                             let policy = pwsmanager::PasswordPolicy::Memorable {
@@ -720,7 +845,13 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
                                 include_numbers: options.include_numbers,
                                 capitalization: options.capitalization,
                             };
-                            break (password, Some(policy));
+                            let expiration_days_input = prompt_input("Enter password expiration days (0 for no expiration, default 0): ")?;
+                            let expiration_days = if expiration_days_input.trim().is_empty() {
+                                0
+                            } else {
+                                expiration_days_input.parse().map_err(|_| "Invalid expiration days".to_string())?
+                            };
+                            break (password, Some(policy), expiration_days);
                         }
                         continue;
                     },
@@ -729,13 +860,18 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
                         continue;
                     }
                 };
-                password
             },
             "m" | "manual" => {
                 let password = read_password_from_stdin("Enter password: ")?;
                 let confirm = read_password_from_stdin("Confirm password: ")?;
                 if password == confirm {
-                    break (password, None);
+                    let expiration_days_input = prompt_input("Enter password expiration days (0 for no expiration, default 0): ")?;
+                            let expiration_days = if expiration_days_input.trim().is_empty() {
+                                0
+                            } else {
+                                expiration_days_input.parse().map_err(|_| "Invalid expiration days".to_string())?
+                            };
+                            break (password, None, expiration_days);
                 } else {
                     eprintln!("Passwords do not match");
                     continue;
@@ -751,7 +887,7 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
     // Encrypt password using securecrypto
     let encrypted_bytes = crypto.encrypt_string(&password)
         .map_err(|e| format!("Failed to encrypt password: {}", e))?;
-    let encrypted_password = general_purpose::STANDARD.encode_string(&encrypted_bytes);
+    let encrypted_password = general_purpose::STANDARD.encode(&encrypted_bytes);
 
     // Add to vault
     let id = manager.add_password(
@@ -759,7 +895,7 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
         username.ok(),
         Some(encrypted_password),
         url.ok(),
-        0, // Never expires
+        expiration_days, // Never expires
         policy,
         note.ok(),
     ).map_err(|e| format!("Failed to add password: {}", e))?;

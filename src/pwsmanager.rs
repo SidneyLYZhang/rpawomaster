@@ -21,7 +21,7 @@ use crate::passgen::Capitalization;
 use crate::passgen::{generate_password, generate_memorable_password, PasswordOptions, MemorablePasswordOptions};
 
 // 密码生成策略配置
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, bincode::Encode, bincode::Decode)]
 pub enum PasswordPolicy {
     Random {
         length: usize,
@@ -133,8 +133,7 @@ impl PasswordManager {
         };
 
         // 序列化数据
-        let mut serialized = [0u8; 100];
-        encode_into_slice(&entry, &mut serialized, standard())?;
+        let serialized = bincode::serde::encode_to_vec(&entry, standard())?;
         
         // 获取密码树
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
@@ -156,7 +155,7 @@ impl PasswordManager {
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
         
         if let Some(entry) = passwords_tree.get(id.as_bytes())? {
-            let entry: PasswordEntry = decode_from_slice(&entry, standard())?.0;
+            let entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
             
             // 删除主记录
             passwords_tree.remove(id.as_bytes())?;
@@ -181,7 +180,7 @@ impl PasswordManager {
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
         
         if let Some(entry) = passwords_tree.get(id.as_bytes())? {
-            let mut entry: PasswordEntry = decode_from_slice(&entry, standard())?.0;
+            let mut entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
             let now = Utc::now();
             
             let new_password = if let Some(policy) = &new_policy {
