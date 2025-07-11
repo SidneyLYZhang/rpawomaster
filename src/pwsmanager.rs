@@ -43,7 +43,7 @@ pub enum PasswordPolicy {
 // 密码历史记录
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PasswordHistory {
-    pub password: String,
+    pub password: Vec<u8>,
     pub created_at: DateTime<Utc>,
     pub policy: Option<PasswordPolicy>,
 }
@@ -55,7 +55,7 @@ pub struct PasswordEntry {
     pub name: String,
     pub username: Option<String>,
     pub histories: Vec<PasswordHistory>, // 历史密码记录
-    pub current_password: String,        // 当前密码 = histories.last()
+    pub current_password: Vec<u8>,        // 当前密码 = histories.last()
     pub url: Option<String>,
     pub expires_at: Option<DateTime<Utc>>, // None 表示永不过期
     pub policy: Option<PasswordPolicy>,
@@ -91,7 +91,7 @@ impl PasswordManager {
         &self,
         name: String,
         username: Option<String>,
-        password: Option<String>,
+        password: Option<Vec<u8>>,
         url: Option<String>,
         expires_in_days: u32, // 0 表示永不过期
         policy: Option<PasswordPolicy>,
@@ -123,7 +123,7 @@ impl PasswordManager {
             name: name.clone(),
             username,
             histories: vec![history],
-            current_password: password,
+            current_password: password.clone(),
             url,
             expires_at,
             policy,
@@ -186,18 +186,18 @@ impl PasswordManager {
             let new_password = if let Some(policy) = &new_policy {
                 self.generate_from_policy(policy)?
             } else {
-                new_password.ok_or("Either new_password or new_policy must be provided")?
+                new_password.ok_or("Either new_password or new_policy must be provided")?.into_bytes()
             };
 
             // 添加到历史记录
             let history = PasswordHistory {
-                password: new_password.clone(),
+                password: new_password.into_bytes(),
                 created_at: now,
                 policy: new_policy.clone(),
             };
             
             entry.histories.push(history);
-            entry.current_password = new_password;
+            entry.current_password = new_password.into_bytes();
             entry.policy = new_policy;
             entry.updated_at = now;
             
@@ -318,7 +318,7 @@ impl PasswordManager {
         Ok(())
     }
 
-    fn generate_from_policy(&self, policy: &PasswordPolicy) -> Result<String, String> {
+    fn generate_from_policy(&self, policy: &PasswordPolicy) -> Result<Vec<u8>, String> {
         match policy {
             PasswordPolicy::Random { length, include_uppercase, include_lowercase, include_numbers, include_special, url_safe, avoid_confusion } => {
                 let options = PasswordOptions {
@@ -330,7 +330,7 @@ impl PasswordManager {
                     url_safe: *url_safe,
                     avoid_confusion: *avoid_confusion,
                 };
-                generate_password(&options)
+                generate_password(&options).map(|s| s.into_bytes())
             }
             PasswordPolicy::Memorable { words, separator, include_numbers, capitalization } => {
                 let options = MemorablePasswordOptions {
@@ -339,7 +339,7 @@ impl PasswordManager {
                     include_numbers: *include_numbers,
                     capitalization: capitalization.clone(),
                 };
-                generate_memorable_password(&options)
+                generate_memorable_password(&options).map(|s| s.into_bytes())
             }
         }
     }

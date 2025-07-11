@@ -785,12 +785,18 @@ fn main() -> Result<(), String> {
     }
 }
 
-fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>) -> Result<(), String> {
+fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>) -> Result<(), String> {
     // Get core password
     let core_password = read_password_from_stdin("Enter core password: ")?;
 
+    // Get username
+    let user = match user_arg {
+        Some(u) => u,
+        None => prompt_input("Enter username: ")?,
+    };
+
     // Get config
-    let config = load_config()?;
+    let config = load_config(&user)?;
     let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
     let crypto = securecrypto::SecureCrypto::from_pem_keys(&config.public_key, &private_key)
         .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
@@ -993,28 +999,16 @@ fn add_password_interactive(_user_arg: Option<String>, vault_arg: Option<String>
     Ok(())
 }
 
-fn load_config() -> Result<ConfigFile, String> {
-    // Get username from config directory
+fn load_config(username: &str) -> Result<ConfigFile, String> {
+    // Get config directory
     let config_dir = get_config_dir()?;
-    let entries = fs::read_dir(&config_dir)
-        .map_err(|e| format!("Failed to read config directory: {}", e))?;
+    let config_file_path = config_dir.join(format!("{}.json", username));
 
-    let mut config_files = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-        let path = entry.path();
-        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-            config_files.push(path);
-        }
+    if !config_file_path.exists() {
+        return Err(format!("Configuration file for user '{}' not found. Please run 'init' first.", username));
     }
 
-    if config_files.is_empty() {
-        return Err("No configuration files found. Please run 'init' first.".to_string());
-    }
-
-    // For simplicity, take the first config file (in real scenario, handle multiple users)
-    let config_path = &config_files[0];
-    let config_data = fs::read_to_string(config_path)
+    let config_data = fs::read_to_string(&config_file_path)
         .map_err(|e| format!("Failed to read config file: {}", e))?;
 
     serde_json::from_str(&config_data)
@@ -1024,10 +1018,11 @@ fn load_config() -> Result<ConfigFile, String> {
 fn select_vault(config: &ConfigFile, vault_arg: Option<String>) -> Result<Vault, String> {
     match vault_arg {
         Some(vault_name) => {
+            let existing_vaults: Vec<_> = config.vaults.iter().map(|v| &v.name).collect();
             config.vaults.iter()
                 .find(|v| v.name == vault_name)
                 .cloned()
-                .ok_or(format!("Vault '{}' not found", vault_name))
+                .ok_or(format!("Vault '{}' not found. Existing vaults: {:?}", vault_name, existing_vaults))
         },
         None => {
             // Find default vault
@@ -1140,9 +1135,14 @@ fn search_passwords(text: String, user: Option<String>, vault: Option<String>) -
 
     let selected_entry = &entries[selection - 1];
 
-    // 解密密码
-    let encrypted_bytes = general_purpose::STANDARD.decode(selected_entry.current_password.trim())
-        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+    // 解密密码 - 支持新旧格式兼容
+    let encrypted_bytes = match general_purpose::STANDARD.decode(selected_entry.current_password.trim()) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            // 回退使用原始字节（旧格式）
+            selected_entry.current_password.as_bytes().to_vec()
+        }
+    };
     let decrypted_password = crypto.decrypt_string(&IVec::from(encrypted_bytes))
         .map_err(|e| format!("Failed to decrypt password: {}", e))?;
 

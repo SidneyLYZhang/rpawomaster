@@ -361,23 +361,21 @@ impl SecureCrypto {
 }
 
 // 密钥生成工具函数
-pub fn generate_keys() -> Result<(String, String)> {
-    let mut rng = rand::thread_rng();
-    let private_key = RsaPrivateKey::new(&mut rng, RSA_KEY_SIZE)
-        .context("Failed to generate RSA key pair")?;
-    let public_key = RsaPublicKey::from(&private_key);
+// pub fn generate_keys() -> Result<(String, String)> {
+//     let mut rng = rand::thread_rng();
+//     let private_key = RsaPrivateKey::new(&mut rng, RSA_KEY_SIZE)
+//         .context("Failed to generate RSA key pair")?;
+//     let public_key = RsaPublicKey::from(&private_key);
 
-    let private_pem = private_key
-        .to_pkcs8_pem(LineEnding::LF)
-        .context("Failed to serialize private key")?
-        .to_string();
-    let public_pem = public_key
-        .to_public_key_pem(LineEnding::LF)
-        .context("Failed to serialize public key")?;
-
-    Ok((public_pem, private_pem))
-}
-
+//     let private_pem = private_key
+//         .to_pkcs8_pem(LineEnding::LF)
+//         .context("Failed to serialize private key")?
+//         .to_string();
+//     let public_pem = public_key
+//         .to_public_key_pem(LineEnding::LF)
+//         .context("Failed to serialize public key")?;
+//     Ok((public_pem, private_pem))
+// }
 pub fn generate_rsa_keypair() -> Result<(String, String), String> {
     let mut rng = OsRng;
     let private_key = RsaPrivateKey::new(&mut rng, RSA_KEY_SIZE)
