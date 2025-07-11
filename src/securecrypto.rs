@@ -93,7 +93,7 @@ impl SecureCrypto {
 
         // 解析数据包结构
         if data.len() < 4 + 16 {
-            return Err(anyhow!("Invalid encrypted data format"));
+            return Err(anyhow!("Invalid encrypted data format: too short ({} bytes)", data.len()));
         }
 
         let key_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
@@ -104,7 +104,7 @@ impl SecureCrypto {
         let ciphertext_start = iv_end;
 
         if data.len() < ciphertext_start {
-            return Err(anyhow!("Invalid encrypted data format"));
+            return Err(anyhow!("Invalid encrypted data format: key_len {} exceeds data length {} (needs at least {})", key_len, data.len(), ciphertext_start));
         }
 
         // 提取各部分数据
@@ -390,4 +390,53 @@ pub fn generate_rsa_keypair() -> Result<(String, String), String> {
         .map_err(|e| format!("Failed to serialize public key: {}", e))?;
 
     Ok((private_key_pem.to_string(), public_key_pem.to_string()))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sled::IVec;
+
+    #[test]
+    fn test_encrypt_decrypt_string() {
+        // 生成密钥对
+        let (private_pem, public_pem) = generate_rsa_keypair().expect("Failed to generate RSA key pair");
+        
+        // 创建SecureCrypto实例
+        let crypto = SecureCrypto::from_pem_keys(&public_pem, &private_pem).expect("Failed to create SecureCrypto instance");
+        
+        // 测试字符串
+        let test_str = "Hello, World! This is a test string with special characters: 12345!@#$%^&*()";
+        
+        // 加密字符串
+        let encrypted_data = crypto.encrypt_string(test_str).expect("Encryption failed");
+        
+        // 解密字符串
+        let decrypted_str = crypto.decrypt_string(&IVec::from(encrypted_data)).expect("Decryption failed");
+        
+        // 验证解密结果
+        assert_eq!(decrypted_str, test_str, "Decrypted string does not match original");
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_empty_string() {
+        // 生成密钥对
+        let (private_pem, public_pem) = generate_rsa_keypair().expect("Failed to generate RSA key pair");
+        
+        // 创建SecureCrypto实例
+        let crypto = SecureCrypto::from_pem_keys(&public_pem, &private_pem).expect("Failed to create SecureCrypto instance");
+        
+        // 测试空字符串
+        let test_str = "";
+        
+        // 加密字符串
+        let encrypted_data = crypto.encrypt_string(test_str).expect("Encryption failed");
+        
+        // 解密字符串
+        let decrypted_str = crypto.decrypt_string(&IVec::from(encrypted_data)).expect("Decryption failed");
+        
+        // 验证解密结果
+        assert_eq!(decrypted_str, test_str, "Decrypted empty string does not match original");
+    }
 }

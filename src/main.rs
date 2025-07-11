@@ -17,15 +17,16 @@ use rand::rngs::OsRng;
 // use zxcvbn::zxcvbn;
 // use std::collections::HashSet;
 // use rsa::RsaPrivateKey;
-use rsa::pkcs8::{EncodePrivateKey, DecodePrivateKey};
-use rsa::pkcs8::{EncodePublicKey, LineEnding};
+// use rsa::pkcs8::{EncodePrivateKey, DecodePrivateKey};
+// use rsa::pkcs8::{EncodePublicKey, LineEnding};
 use aes_gcm::{Aes256Gcm, AeadInPlace, KeyInit, Nonce};
 use pbkdf2::pbkdf2;
 use sha2::Sha256;
 use hmac::Hmac;
 use serde::{Serialize, Deserialize};
 use serde_json;
-use std::{fs, option};
+use std::fs;
+use sled::IVec;
 use std::path::PathBuf;
 use dirs::config_dir;
 use rpassword::read_password;
@@ -37,6 +38,8 @@ use base64::Engine;
 use base64::engine::general_purpose;
 
 use crate::passgen::Capitalization;
+use crate::securecrypto::SecureCrypto;
+use crate::pwsmanager::PasswordManager;
 
 mod pwsmanager;
 mod securecrypto;
@@ -86,10 +89,28 @@ enum Cli {
     },
 
     /// Search passwords in the vault
-    Search,
+    Search {
+        /// Text to search for
+        text: String,
+        
+        /// User to filter passwords by
+        #[arg(short, long)]
+        user: Option<String>,
+        
+        /// Vault to search in
+        #[arg(short, long)]
+        vault: Option<String>,
+    },
 
     /// Test password strength and properties
     Testpass(TestpassArgs),
+
+    /// List all password vaults
+    Vaults {
+        /// User to list vaults for
+        #[arg(short, long)]
+        user: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -194,30 +215,6 @@ struct GenArgs {
     /// Avoid visually confusing characters
     #[arg(short = 'c', long, default_value_t = false)]
     avoid_confusion: bool,
-}
-
-struct PasswordOptions {
-    length: usize,
-    include_uppercase: bool,
-    include_lowercase: bool,
-    include_numbers: bool,
-    include_special: bool,
-    url_safe: bool,
-    avoid_confusion: bool,
-}
-
-impl From<GenArgs> for PasswordOptions {
-    fn from(args: GenArgs) -> Self {
-        Self {
-            length: args.length,
-            include_uppercase: !args.no_uppercase,
-            include_lowercase: !args.no_lowercase,
-            include_numbers: !args.no_numbers,
-            include_special: !args.no_special,
-            url_safe: args.url_safe,
-            avoid_confusion: args.avoid_confusion,
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -623,42 +620,99 @@ fn main() -> Result<(), String> {
             Ok(())
         },
         Cli::List { user, vault } => {
-            // 获取密码库路径，优先使用命令行参数，否则使用配置文件中的默认值
-            let vault_path = match vault {
-                Some(path) => path,
+            // 获取用户名
+            let username = match user {
+                Some(u) => u.to_string(),
                 None => {
-                    // 这里需要从配置文件读取默认密码库路径，当前使用占位符
-                    "data/default_vault".to_string()
+                    print!("Enter username: ");
+                    io::stdout().flush().map_err(|e| e.to_string())?;
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+                    let input = input.trim();
+                    if input.is_empty() {
+                        return Err("Username cannot be empty".to_string());
+                    }
+                    input.to_string()
                 }
             };
+
+            // 加载用户配置
+            let config_dir = get_config_dir()?;
+            let config_file_path = config_dir.join(format!("{}.json", username));
+            if !config_file_path.exists() {
+                return Err(format!("No configuration found for user '{}'. Please initialize first.", username));
+            }
+            let config_data = fs::read_to_string(&config_file_path)
+                .map_err(|e| format!("Failed to read config file: {}", e))?;
+            let config: ConfigFile = serde_json::from_str(&config_data)
+                .map_err(|e| format!("Failed to parse config file: {}", e))?;
+
+            // 处理密码库选择
+            let vault_path = match vault {
+                Some(v) => {
+                    // 尝试按名称查找密码库
+                    if let Some(vault) = config.vaults.iter().find(|vault| vault.name == *v) {
+                        vault.path.clone()
+                    } else {
+                        // 未找到对应名称的密码库
+                        return Err(format!("Vault '{}' not found. Available vaults: {}", 
+                            v, 
+                            config.vaults.iter().map(|v| &v.name).map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+                    }
+                },
+                None => {
+                    if config.vaults.len() == 1 {
+                        // 只有一个密码库，直接使用
+                        config.vaults[0].path.clone()
+                    } else {
+                        // 查找默认密码库
+                        if let Some(default_vault) = config.vaults.iter().find(|v| v.is_default) {
+                            default_vault.path.clone()
+                        } else {
+                            // 让用户选择密码库
+                            println!("Available vaults:");
+                            for (i, v) in config.vaults.iter().enumerate() {
+                                println!("{}. {} - {}", i+1, v.name, v.path);
+                            }
+                            print!("Enter vault number to use: ");
+                            io::stdout().flush().map_err(|e| e.to_string())?;
+                            let mut input = String::new();
+                            io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+                            let selection: usize = input.trim().parse()
+                                .map_err(|_| "Invalid selection. Please enter a number.".to_string())?;
+                            if selection < 1 || selection > config.vaults.len() {
+                                return Err(format!("Invalid selection. Please enter a number between 1 and {}", config.vaults.len()));
+                            }
+                            config.vaults[selection-1].path.clone()
+                        }
+                    }
+                }
+            };
+
+            // 验证密码库路径存在
+            let vault_path_buf = PathBuf::from(&vault_path);
+            if !vault_path_buf.exists() {
+                return Err(format!("Vault directory not found: {}", vault_path));
+            }
 
             // 初始化密码管理器
             let manager = pwsmanager::PasswordManager::new(&vault_path)
                                             .map_err(|e| format!("Failed to initialize password manager: {}", e))?;
             // 获取所有密码条目
             let entries = manager.list_passwords()
-                                                .map_err(|e| format!("Failed to list passwords: {}", e))?;
-
-            // 根据用户名筛选（如果提供）
-            let filtered_entries = if let Some(username) = user {
-                entries.into_iter()
-                    .filter(|e| e.username.as_deref() == Some(&username))
-                    .collect::<Vec<_>>()
-            } else {
-                entries
-            };
+                                        .map_err(|e| format!("Failed to list passwords: {}", e))?;
 
             // 打印表头
-            println!("{:<30} | {:<20} | {:<40} | {:<30} | {:<20}", 
+            println!("{:<10} | {:<10} | {:<40} | {:<30} | {:<5}", 
                      "名称", "用户名", "URL", "说明", "有效期");
-            println!("{}", "-".repeat(145));
+            println!("{}", "-".repeat(105));
 
             // 打印每个条目的信息
-            for entry in filtered_entries {
+            for entry in entries {
                 let expires = entry.expires_at.map_or("永不过期".to_string(), |d| {
                     d.format("%Y-%m-%d").to_string()
                 });
-                println!("{:<30} | {:<20} | {:<40} | {:<30} | {:<20}",
+                println!("{:<10} | {:<10} | {:<40} | {:<30} | {:<5}",
                          entry.name,
                          entry.username.as_deref().unwrap_or("未设置"),
                          entry.url.as_deref().unwrap_or("无"),
@@ -668,8 +722,8 @@ fn main() -> Result<(), String> {
 
             Ok(())
         },
-        Cli::Search => {
-            Ok(())
+        Cli::Search { text, user, vault } => {
+            search_passwords(text, user, vault)
         },
         Cli::Testpass(args) => {
             let (rating, score, feedback) = passgen::assess_password_strength(&args.password)?;
@@ -690,6 +744,41 @@ fn main() -> Result<(), String> {
                 } else {
                     println!("No confusing characters detected");
                 }
+            }
+            Ok(())
+        },
+        Cli::Vaults { user } => {
+            // Get username from argument or prompt
+            let username = match user {
+                Some(u) => u,
+                None => {
+                    print!("Enter username: ");
+                    io::stdout().flush().map_err(|e| e.to_string())?;
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+                    input.trim().to_string()
+                }
+            };
+
+            // Load user configuration
+            let config_dir = get_config_dir()?;
+            let config_file_path = config_dir.join(format!("{}.json", username));
+            if !config_file_path.exists() {
+                return Err(format!("No configuration found for user '{}'", username));
+            }
+
+            let config_data = fs::read_to_string(&config_file_path)
+                .map_err(|e| format!("Failed to read config file: {}", e))?;
+            let config: ConfigFile = serde_json::from_str(&config_data)
+                .map_err(|e| format!("Failed to parse config file: {}", e))?;
+
+            // Display vaults
+            println!("\nPassword vaults for user '{}':", username);
+            println!("{:<20} | {:<50} | {:<10}", "Name", "Path", "Default");
+            println!("{}", "-".repeat(85));
+            for vault in config.vaults {
+                let default_mark = if vault.is_default { "✓" } else { "" };
+                println!("{:<20} | {:<50} | {:<10}", vault.name, vault.path, default_mark);
             }
             Ok(())
         }
@@ -956,4 +1045,121 @@ fn prompt_input(prompt: &str) -> Result<String, String> {
     let mut input = String::new();
     io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
     Ok(input.trim().to_string())
+}
+
+fn search_passwords(text: String, user: Option<String>, vault: Option<String>) -> Result<(), String> {
+    // 获取用户名
+    let username = match user {
+        Some(u) => u,
+        None => {
+            print!("Enter username: ");
+            io::stdout().flush().map_err(|e| e.to_string())?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+            input.trim().to_string()
+        }
+    };
+
+    // 获取配置文件路径
+    let config_dir = get_config_dir()?;
+    let config_file_path = config_dir.join(format!("{}.json", username));
+    if !config_file_path.exists() {
+        return Err(format!("User '{}' not found", username));
+    }
+
+    // 读取配置文件
+    let config_data = fs::read_to_string(&config_file_path)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    let config: ConfigFile = serde_json::from_str(&config_data)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+
+    // 选择密码库
+    let target_vault = match vault {
+        Some(vault_name) => {
+            config.vaults.iter()
+                .find(|v| v.name == vault_name)
+                .ok_or(format!("Vault '{}' not found", vault_name))?
+        }
+        None => {
+            config.vaults.iter()
+                .find(|v| v.is_default)
+                .ok_or("No default vault found. Please specify a vault with --vault")?
+        }
+    };
+
+    // 输入核心密码
+    let core_password = read_password_from_stdin("Enter core password: ")?;
+
+    // 解密私钥
+    let private_key_pem = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+
+    // 初始化SecureCrypto
+    let crypto = SecureCrypto::from_pem_keys(&config.public_key, &private_key_pem)
+        .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
+
+    // 初始化PasswordManager
+    let pm = PasswordManager::new(&target_vault.path)
+        .map_err(|e| format!("Failed to open vault: {}", e))?;
+
+    // 搜索密码
+    let entries = pm.find_passwords(&text, false)
+        .map_err(|e| format!("Search failed: {}", e))?;
+
+    if entries.is_empty() {
+        println!("No passwords found matching '{}'", text);
+        return Ok(());
+    }
+
+    // 显示搜索结果供选择
+    println!("\nFound {} matching passwords:", entries.len());
+    for (i, entry) in entries.iter().enumerate() {
+        println!("{}. Name: {}", i + 1, entry.name);
+        if let Some(username) = &entry.username {
+            println!("   Username: {}", username);
+        }
+        if let Some(url) = &entry.url {
+            println!("   URL: {}", url);
+        }
+        if let Some(note) = &entry.note {
+            println!("   Note: {}", note);
+        }
+        println!();
+    }
+
+    // 让用户选择条目
+    print!("Enter the number of the password to view: ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut response = String::new();
+    io::stdin().read_line(&mut response).map_err(|e| e.to_string())?;
+    let selection: usize = response.trim().parse()
+        .map_err(|_| "Invalid selection. Please enter a number.".to_string())?;
+
+    if selection < 1 || selection > entries.len() {
+        return Err(format!("Invalid selection. Please enter a number between 1 and {}", entries.len()));
+    }
+
+    let selected_entry = &entries[selection - 1];
+
+    // 解密密码
+    let encrypted_bytes = general_purpose::STANDARD.decode(selected_entry.current_password.trim())
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+    let decrypted_password = crypto.decrypt_string(&IVec::from(encrypted_bytes))
+        .map_err(|e| format!("Failed to decrypt password: {}", e))?;
+
+    // 显示详细信息
+    println!("\n--- Password Details ---");
+    println!("Name: {}", selected_entry.name);
+    if let Some(username) = &selected_entry.username {
+        println!("Username: {}", username);
+    }
+    if let Some(url) = &selected_entry.url {
+        println!("URL: {}", url);
+    }
+    if let Some(note) = &selected_entry.note {
+        println!("Note: {}", note);
+    }
+    println!("Password: {}", decrypted_password);
+    println!("------------------------");
+
+    Ok(())
 }
