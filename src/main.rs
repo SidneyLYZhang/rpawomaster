@@ -34,8 +34,8 @@ use hex::encode;
 use rand::RngCore;
 use std::io::{self, Write};
 use chrono::Local;
-use base64::Engine;
-use base64::engine::general_purpose;
+// use base64::Engine;
+// use base64::engine::general_purpose;
 
 use crate::passgen::Capitalization;
 use crate::securecrypto::SecureCrypto;
@@ -108,6 +108,16 @@ enum Cli {
     /// List all password vaults
     Vaults {
         /// User to list vaults for
+        #[arg(short, long)]
+        user: Option<String>,
+    },
+
+    /// test part
+    Test {
+        /// Text to test
+        text: String,
+
+        /// User to test for
         #[arg(short, long)]
         user: Option<String>,
     },
@@ -781,6 +791,9 @@ fn main() -> Result<(), String> {
                 println!("{:<20} | {:<50} | {:<10}", vault.name, vault.path, default_mark);
             }
             Ok(())
+        },
+        Cli::Test { text, user} => {
+            testencrypt(text, user)
         }
     }
 }
@@ -931,7 +944,7 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                             password = passgen::generate_memorable_password(&options)?;
                             println!("Generated password: {}", password);
                         }
-                        
+
                         let confirm = prompt_input("Use this password? [y/n]: ")?;
                         if confirm.trim().to_lowercase() == "y" {
                             let policy = pwsmanager::PasswordPolicy::Memorable {
@@ -980,15 +993,13 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
     };
 
     // Encrypt password using securecrypto
-    let encrypted_bytes = crypto.encrypt_string(&password)
-        .map_err(|e| format!("Failed to encrypt password: {}", e))?;
-    let encrypted_password = general_purpose::STANDARD.encode(&encrypted_bytes);
+    let encrypted_bytes = crypto.encrypt_string(&password).expect("Encryption failed");
 
     // Add to vault
     let id = manager.add_password(
         name,
         username.ok(),
-        Some(encrypted_password),
+        encrypted_bytes,
         url.ok(),
         expiration_days, // Never expires
         policy,
@@ -1136,15 +1147,9 @@ fn search_passwords(text: String, user: Option<String>, vault: Option<String>) -
     let selected_entry = &entries[selection - 1];
 
     // 解密密码 - 支持新旧格式兼容
-    let encrypted_bytes = match general_purpose::STANDARD.decode(selected_entry.current_password.trim()) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            // 回退使用原始字节（旧格式）
-            selected_entry.current_password.as_bytes().to_vec()
-        }
-    };
-    let decrypted_password = crypto.decrypt_string(&IVec::from(encrypted_bytes))
-        .map_err(|e| format!("Failed to decrypt password: {}", e))?;
+    let encrypted_bytes = selected_entry.current_password.clone();
+    let decrypted_password = crypto.decrypt_string(&IVec::from(encrypted_bytes.clone()))
+                                            .expect("Decryption failed");
 
     // 显示详细信息
     println!("\n--- Password Details ---");
@@ -1155,11 +1160,34 @@ fn search_passwords(text: String, user: Option<String>, vault: Option<String>) -
     if let Some(url) = &selected_entry.url {
         println!("URL: {}", url);
     }
-    if let Some(note) = &selected_entry.note {
-        println!("Note: {}", note);
-    }
-    println!("Password: {}", decrypted_password);
+    println!("Password: {}", decrypted_password.clone());
     println!("------------------------");
+
+    Ok(())
+}
+
+fn testencrypt(text: String, user_arg: Option<String>) -> Result<(), String> {
+    // Get core password
+    let core_password = read_password_from_stdin("Enter core password: ")?;
+
+    // Get username
+    let user = match user_arg {
+        Some(u) => u,
+        None => prompt_input("Enter username: ")?,
+    };
+
+    // Get config
+    let config = load_config(&user)?;
+    let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+    let crypto = securecrypto::SecureCrypto::from_pem_keys(&config.public_key, &private_key)
+        .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
+
+    let encrypted = crypto.encrypt_string(&text).expect("Encryption failed");
+    println!("Encrypted: {:?}", encrypted.clone());
+
+    // Decrypt
+    let decrypted = crypto.decrypt_string(&IVec::from(encrypted)).expect("Decryption failed");
+    println!("Decrypted: {}", decrypted);
 
     Ok(())
 }

@@ -44,8 +44,7 @@ pub enum PasswordPolicy {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PasswordHistory {
     pub password: Vec<u8>,
-    pub created_at: DateTime<Utc>,
-    pub policy: Option<PasswordPolicy>,
+    pub created_at: DateTime<Utc>
 }
 
 // 主密码条目
@@ -91,7 +90,7 @@ impl PasswordManager {
         &self,
         name: String,
         username: Option<String>,
-        password: Option<Vec<u8>>,
+        password: Vec<u8>,
         url: Option<String>,
         expires_in_days: u32, // 0 表示永不过期
         policy: Option<PasswordPolicy>,
@@ -105,17 +104,9 @@ impl PasswordManager {
         } else {
             None
         };
-
-        let password = if let Some(policy) = &policy {
-            self.generate_from_policy(policy)?
-        } else {
-            password.ok_or("Password must be provided when no policy is specified")?
-        };
-
         let history = PasswordHistory {
             password: password.clone(),
             created_at: now,
-            policy: policy.clone(),
         };
 
         let entry = PasswordEntry {
@@ -133,13 +124,15 @@ impl PasswordManager {
         };
 
         // 序列化数据
-        let serialized = bincode::serde::encode_to_vec(&entry, standard())?;
+        let mut buffer = vec![0u8; 1024]; // 初始化一个足够大的缓冲区
+        encode_into_slice(&entry, &mut buffer, standard())?;
+        let serialized = &buffer[..];
         
         // 获取密码树
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
         
         // 存储主数据
-        passwords_tree.insert(id.as_bytes(), serialized.as_slice())?;
+        passwords_tree.insert(id.as_bytes(), serialized)?;
         
         // 更新索引
         self.update_index(IndexType::Name, &name, id)?;
@@ -174,8 +167,7 @@ impl PasswordManager {
     pub fn update_password(
         &self,
         id: Uuid,
-        new_password: Option<String>,
-        new_policy: Option<PasswordPolicy>,
+        new_password: Option<Vec<u8>>
     ) -> Result<(), Box<dyn std::error::Error>> {
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
         
@@ -183,28 +175,29 @@ impl PasswordManager {
             let mut entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
             let now = Utc::now();
             
-            let new_password = if let Some(policy) = &new_policy {
-                self.generate_from_policy(policy)?
-            } else {
-                new_password.ok_or("Either new_password or new_policy must be provided")?.into_bytes()
+            let new_password = match new_password {
+                Some(p) => p,
+                None => {
+                    let policy = entry.policy.clone().ok_or("Password policy must be specified")?;
+                    self.generate_from_policy(&policy)?
+                }
             };
 
             // 添加到历史记录
             let history = PasswordHistory {
-                password: new_password.into_bytes(),
+                password: new_password.clone(),
                 created_at: now,
-                policy: new_policy.clone(),
             };
             
             entry.histories.push(history);
-            entry.current_password = new_password.into_bytes();
-            entry.policy = new_policy;
+            entry.current_password = new_password;
             entry.updated_at = now;
             
             // 保存更新
-            let mut serialized = [0u8; 100];
-            encode_into_slice(&entry, &mut serialized, standard())?;
-            passwords_tree.insert(id.as_bytes(), serialized.as_slice())?;
+            let mut buffer = vec![0u8; 1024]; // 初始化一个足够大的缓冲区
+            encode_into_slice(&entry, &mut buffer, standard())?;
+            let serialized = &buffer[..];
+            passwords_tree.insert(id.as_bytes(), serialized)?;
         }
         
         Ok(())
@@ -221,7 +214,7 @@ impl PasswordManager {
         
         for record in passwords_tree.iter() {
             let (_, value) = record?;
-            let entry: PasswordEntry = decode_from_slice(&value, standard())?.0;
+            let entry: PasswordEntry = bincode::serde::decode_from_slice(&value, standard())?.0;
             
             // 检查名称和备注
             let name_match = if exact_match {
@@ -280,8 +273,7 @@ impl PasswordManager {
         // 添加新ID
         if !ids.contains(&id) {
             ids.push(id);
-            let mut serialized = [0u8; 100];
-            encode_into_slice(&ids, &mut serialized, standard())?;
+            let serialized = bincode::serde::encode_to_vec(&ids, standard())?;
             index_tree.insert(index_key, serialized.as_slice())?;
         }
         

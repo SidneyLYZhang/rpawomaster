@@ -21,12 +21,12 @@ use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rand::RngCore;
 use base64::{engine::general_purpose, Engine as _};
 use cbc::{Decryptor, Encryptor};
-use rsa::{Oaep, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
+use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs8::LineEnding;
 use sled::IVec;
 use std::{
     fs::{self, File},
-    io::{self, Read, Write},
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use tar::{Archive, Builder};
@@ -236,22 +236,22 @@ impl SecureCrypto {
     }
 
     fn encrypt_dir(&self, dir_path: &Path) -> Result<()> {
-        // 创建临时tar文件
-        let tar_tempfile = NamedTempFile::new()?;
-        let tar_path = tar_tempfile.path();
-        
-        // 将文件夹打包为tar
-        self.create_tar_archive(dir_path, tar_path)?;
+        // 在同一目录创建tar文件
+        let tar_path = dir_path.with_extension("tar");
+        self.create_tar_archive(dir_path, &tar_path)?;
         
         // 加密tar文件
-        self.encrypt_file(tar_path)?;
+        self.encrypt_file(&tar_path)?;
         
-        // 获取加密后的文件路径 (.esz)
-        let encrypted_path = self.output_path(tar_path, true)?;
+        // 获取加密后的文件路径 (.tar.esz)
+        let encrypted_tar_path = tar_path.with_extension(EXTENSION);
         
-        // 重命名加密文件到目标位置
+        // 重命名为最终目标路径 (.esz)
         let target_path = dir_path.with_extension(EXTENSION);
-        fs::rename(encrypted_path, &target_path)?;
+        fs::rename(encrypted_tar_path, &target_path)?;
+        
+        // 清理临时tar文件
+        fs::remove_file(tar_path)?;
         
         // 临时文件自动删除
         Ok(())
@@ -277,13 +277,15 @@ impl SecureCrypto {
             fs::remove_dir_all(&output_dir)?;
         }
         
-        // 重命名临时目录到目标位置
-        let decrypted_dir = temp_path.read_dir()?
-            .next()
-            .ok_or(anyhow!("No directory in temp folder"))??
-            .path();
+        // 创建输出目录
+        fs::create_dir_all(&output_dir)?;
         
-        fs::rename(decrypted_dir, output_dir)?;
+        // 将临时目录中的所有内容移动到输出目录
+        for entry in fs::read_dir(temp_path)? {
+            let entry = entry?;
+            let dest_path = output_dir.join(entry.file_name());
+            fs::rename(entry.path(), dest_path)?;
+        }
         
         // 临时目录自动删除
         Ok(())
@@ -324,6 +326,7 @@ impl SecureCrypto {
         let tar_file = File::create(tar_path)?;
         let mut tar_builder = Builder::new(tar_file);
         
+        // 显式添加所有文件和子目录以确保目录结构完整
         for entry in WalkDir::new(source_dir) {
             let entry = entry?;
             let path = entry.path();
@@ -331,6 +334,13 @@ impl SecureCrypto {
             if path.is_file() {
                 let relative_path = path.strip_prefix(source_dir)?;
                 tar_builder.append_path_with_name(path, relative_path)?;
+            } else if path.is_dir() && path != source_dir {
+                let relative_path = path.strip_prefix(source_dir)?;
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(0o755);
+                header.set_size(0);
+                header.set_cksum();
+                tar_builder.append_data(&mut header, relative_path, std::io::empty())?;
             }
         }
         
@@ -395,6 +405,10 @@ pub fn generate_rsa_keypair() -> Result<(String, String), String> {
 mod tests {
     use super::*;
     use sled::IVec;
+    use tempfile::{NamedTempFile, tempdir};
+    use std::fs;
+    use std::io::Write;
+
 
     #[test]
     fn test_encrypt_decrypt_string() {
@@ -405,10 +419,10 @@ mod tests {
         let crypto = SecureCrypto::from_pem_keys(&public_pem, &private_pem).expect("Failed to create SecureCrypto instance");
         
         // 测试字符串
-        let test_str = "Hello, World! This is a test string with special characters: 12345!@#$%^&*()";
+        let test_str = "Hello, World! This is a test string with special characters: )V?(3S8}5mrM?%XW".to_string();
         
         // 加密字符串
-        let encrypted_data = crypto.encrypt_string(test_str).expect("Encryption failed");
+        let encrypted_data = crypto.encrypt_string(&test_str).expect("Encryption failed");
         
         // 解密字符串
         let decrypted_str = crypto.decrypt_string(&IVec::from(encrypted_data)).expect("Decryption failed");
@@ -436,5 +450,86 @@ mod tests {
         
         // 验证解密结果
         assert_eq!(decrypted_str, test_str, "Decrypted empty string does not match original");
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_file() {
+        // 生成密钥对
+        let (private_pem, public_pem) = generate_rsa_keypair().expect("Failed to generate RSA key pair");
+        let crypto = SecureCrypto::from_pem_keys(&public_pem, &private_pem).expect("Failed to create SecureCrypto instance");
+
+        // 创建临时测试文件
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let test_content = b"Test file content with special characters: \xE6\xB5\x8B\xE8\xAF\x95\xE6\x96\x87\xE6\x9C\xAC \xC2\xA3\xC2\xA5\xE2\x82\xAC";
+        temp_file.write_all(test_content).expect("Failed to write to temp file");
+        let temp_path = temp_file.path().to_path_buf();
+
+        // 加密文件
+        crypto.encrypt_path(&temp_path).expect("File encryption failed");
+
+        // 验证加密文件存在
+        let encrypted_path = temp_path.with_extension("esz");
+        assert!(encrypted_path.exists(), "Encrypted file not created");
+
+        // 删除原始文件以确保解密效果
+        fs::remove_file(&temp_path).expect("Failed to remove original file");
+
+        // 解密文件
+        crypto.decrypt_path(&encrypted_path).expect("File decryption failed");
+
+        // 验证解密内容
+        let decrypted_content = fs::read(&temp_path).expect("Failed to read decrypted file");
+        assert_eq!(decrypted_content, test_content, "Decrypted file content does not match original");
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_directory() {
+        // 生成密钥对
+        let (private_pem, public_pem) = generate_rsa_keypair().expect("Failed to generate RSA key pair");
+        let crypto = SecureCrypto::from_pem_keys(&public_pem, &private_pem).expect("Failed to create SecureCrypto instance");
+
+        // 创建临时目录
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let temp_dir_path = temp_dir.path();
+
+        // 创建测试目录结构
+        let test_dir = temp_dir_path.join("test_dir");
+        fs::create_dir(&test_dir).expect("Failed to create test directory");
+
+        // 创建子目录
+        let subdir = test_dir.join("subdir");
+        fs::create_dir(&subdir).expect("Failed to create subdirectory");
+
+        // 创建文件1
+        let file1 = test_dir.join("file1.txt");
+        fs::write(&file1, b"Content of file 1").expect("Failed to write file1");
+
+        // 创建文件2
+        let file2 = subdir.join("file2.txt");
+        fs::write(&file2, b"Content of file 2 with special characters: \xE6\xB5\x8B\xE8\xAF\x95\xE7\x9B\xAE\xE5\xBD\x95\xE5\x8A\xA0\xE5\xAF\x86").expect("Failed to write file2");
+
+        // 加密目录
+        crypto.encrypt_path(&test_dir).expect("Directory encryption failed");
+
+        // 验证加密文件存在
+        let encrypted_path = temp_dir_path.join("test_dir.esz");
+        assert!(encrypted_path.exists(), "Encrypted directory file not created");
+
+        // 删除原始目录以确保解密效果
+        fs::remove_dir_all(&test_dir).expect("Failed to remove original directory");
+
+        // 解密目录
+        crypto.decrypt_path(&encrypted_path).expect("Directory decryption failed");
+
+        // 验证解密后的目录结构和内容
+        assert!(test_dir.exists(), "Decrypted directory not created");
+        let decrypted_subdir = test_dir.join("subdir");
+        assert!(decrypted_subdir.exists(), "Decrypted subdirectory not found");
+        assert!(file1.exists(), "Decrypted file1 not found");
+        assert!(file2.exists(), "Decrypted file2 not found");
+
+        // 验证文件内容
+        assert_eq!(fs::read(&file1).expect("Failed to read decrypted file1"), b"Content of file 1");
+        assert_eq!(fs::read(&file2).expect("Failed to read decrypted file2"), b"Content of file 2 with special characters: \xE6\xB5\x8B\xE8\xAF\x95\xE7\x9B\xAE\xE5\xBD\x95\xE5\x8A\xA0\xE5\xAF\x86");
     }
 }
