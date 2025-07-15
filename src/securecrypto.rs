@@ -124,22 +124,33 @@ impl SecureCrypto {
     }
 
     /// 加密文件或目录
-    pub fn encrypt_path(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if path.is_dir() {
-            self.encrypt_dir(path)
+    pub fn encrypt_path(&self, source_path: impl AsRef<Path>, target_path: impl AsRef<Path>) -> Result<()> {
+        let source_path = source_path.as_ref();
+        let target_path = target_path.as_ref();
+        
+        if source_path.is_dir() {
+            self.encrypt_dir(source_path, target_path)
         } else {
-            self.encrypt_file(path)
+            self.encrypt_file(source_path, target_path)
         }
     }
 
     /// 解密文件或目录
-    pub fn decrypt_path(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if path.is_dir() {
-            self.decrypt_dir(path)
+    pub fn decrypt_path(&self, source_path: impl AsRef<Path>, target_path: impl AsRef<Path>) -> Result<()> {
+        let source_path = source_path.as_ref();
+        let target_path = target_path.as_ref();
+        
+        if source_path.is_file() && source_path.extension().map_or(false, |e| e == "esz") {
+            // 检查目标路径：如果是目录，则解压；如果是文件，则解密为文件
+            if target_path.extension().is_none() || target_path.is_dir() {
+                // 目标路径看起来像目录，执行目录解压
+                self.decrypt_dir(source_path, target_path)
+            } else {
+                // 目标路径看起来像文件，执行文件解密
+                self.decrypt_file(source_path, target_path)
+            }
         } else {
-            self.decrypt_file(path)
+            Err(anyhow!("Invalid source path for decryption: must be a .esz file"))
         }
     }
 
@@ -179,8 +190,7 @@ impl SecureCrypto {
             .map_err(|e| anyhow!("AES decryption failed: {:?}", e))
     }
 
-    fn encrypt_file(&self, input_path: &Path) -> Result<()> {
-        let output_path = self.output_path(input_path, true)?;
+    fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<()> {
         let mut input_file = fs::File::open(input_path)
             .with_context(|| format!("Failed to open input file: {:?}", input_path))?;
 
@@ -193,8 +203,13 @@ impl SecureCrypto {
         // 加密内容
         let encrypted_data = self.encrypt_string(&general_purpose::STANDARD.encode(&data))?;
 
+        // 确保输出目录存在
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
         // 写入加密文件
-        let mut output_file = fs::File::create(&output_path)
+        let mut output_file = fs::File::create(output_path)
             .with_context(|| format!("Failed to create output file: {:?}", output_path))?;
         output_file
             .write_all(&encrypted_data)
@@ -203,8 +218,7 @@ impl SecureCrypto {
         Ok(())
     }
 
-    fn decrypt_file(&self, input_path: &Path) -> Result<()> {
-        let output_path = self.output_path(input_path, false)?;
+    fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<()> {
         let mut input_file = fs::File::open(input_path)
             .with_context(|| format!("Failed to open input file: {:?}", input_path))?;
 
@@ -226,7 +240,7 @@ impl SecureCrypto {
         }
 
         // 写入原始文件
-        let mut output_file = fs::File::create(&output_path)
+        let mut output_file = fs::File::create(output_path)
             .with_context(|| format!("Failed to create output file: {:?}", output_path))?;
         output_file
             .write_all(&decrypted_data)
@@ -235,29 +249,22 @@ impl SecureCrypto {
         Ok(())
     }
 
-    fn encrypt_dir(&self, dir_path: &Path) -> Result<()> {
-        // 在同一目录创建tar文件
-        let tar_path = dir_path.with_extension("tar");
-        self.create_tar_archive(dir_path, &tar_path)?;
+    fn encrypt_dir(&self, dir_path: &Path, target_path: &Path) -> Result<()> {
+        // 创建临时tar文件
+        let temp_dir = tempfile::tempdir()?;
+        let temp_tar_path = temp_dir.path().join("temp.tar");
         
-        // 加密tar文件
-        self.encrypt_file(&tar_path)?;
+        // 创建tar归档
+        self.create_tar_archive(dir_path, &temp_tar_path)?;
         
-        // 获取加密后的文件路径 (.tar.esz)
-        let encrypted_tar_path = tar_path.with_extension(EXTENSION);
+        // 加密tar文件到指定目标位置
+        self.encrypt_file(&temp_tar_path, target_path)?;
         
-        // 重命名为最终目标路径 (.esz)
-        let target_path = dir_path.with_extension(EXTENSION);
-        fs::rename(encrypted_tar_path, &target_path)?;
-        
-        // 清理临时tar文件
-        fs::remove_file(tar_path)?;
-        
-        // 临时文件自动删除
+        // 临时目录自动清理
         Ok(())
     }
 
-    fn decrypt_dir(&self, input_path: &Path) -> Result<()> {
+    fn decrypt_dir(&self, input_path: &Path, output_dir: &Path) -> Result<()> {
         // 创建临时目录用于解包
         let temp_dir = tempfile::tempdir()?;
         let temp_path = temp_dir.path();
@@ -266,26 +273,18 @@ impl SecureCrypto {
         let decrypted_tar_path = temp_path.join("decrypted.tar");
         self.decrypt_file_to(input_path, &decrypted_tar_path)?;
         
-        // 解包tar文件
-        self.extract_tar_archive(&decrypted_tar_path, temp_path)?;
-        
-        // 确定目标输出目录
-        let output_dir = self.output_path(input_path, false)?;
-        
         // 确保输出目录不存在或为空
         if output_dir.exists() {
-            fs::remove_dir_all(&output_dir)?;
+            fs::remove_dir_all(output_dir)?;
         }
         
-        // 创建输出目录
-        fs::create_dir_all(&output_dir)?;
-        
-        // 将临时目录中的所有内容移动到输出目录
-        for entry in fs::read_dir(temp_path)? {
-            let entry = entry?;
-            let dest_path = output_dir.join(entry.file_name());
-            fs::rename(entry.path(), dest_path)?;
+        // 创建输出目录的父目录
+        if let Some(parent) = output_dir.parent() {
+            fs::create_dir_all(parent)?;
         }
+        
+        // 解包tar文件到指定输出目录
+        self.extract_tar_archive(&decrypted_tar_path, output_dir)?;
         
         // 临时目录自动删除
         Ok(())
@@ -355,19 +354,26 @@ impl SecureCrypto {
         Ok(())
     }
 
-    fn output_path(&self, path: &Path, encrypt: bool) -> Result<PathBuf> {
-        if encrypt {
-            if path.extension().map_or(false, |e| e == EXTENSION) {
-                return Err(anyhow!("File already has .{} extension", EXTENSION));
-            }
-            Ok(path.with_extension(EXTENSION))
-        } else {
-            if path.extension().map_or(true, |e| e != EXTENSION) {
-                return Err(anyhow!("File does not have .{} extension", EXTENSION));
-            }
-            Ok(path.with_extension(""))
+    fn copy_dir_recursive(&self, src: &Path, dst: &Path) -> Result<()> {
+        if !dst.exists() {
+            fs::create_dir_all(dst)?;
         }
+        
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            
+            if entry.file_type()?.is_dir() {
+                self.copy_dir_recursive(&src_path, &dst_path)?;
+            } else {
+                fs::copy(&src_path, &dst_path)?;
+            }
+        }
+        Ok(())
     }
+
+
 }
 
 // 密钥生成工具函数
@@ -464,21 +470,26 @@ mod tests {
         temp_file.write_all(test_content).expect("Failed to write to temp file");
         let temp_path = temp_file.path().to_path_buf();
 
+        // 创建加密文件的目标路径
+        let encrypted_path = temp_path.with_extension("esz");
+
         // 加密文件
-        crypto.encrypt_path(&temp_path).expect("File encryption failed");
+        crypto.encrypt_path(&temp_path, &encrypted_path).expect("File encryption failed");
 
         // 验证加密文件存在
-        let encrypted_path = temp_path.with_extension("esz");
         assert!(encrypted_path.exists(), "Encrypted file not created");
 
         // 删除原始文件以确保解密效果
         fs::remove_file(&temp_path).expect("Failed to remove original file");
 
+        // 创建解密文件的目标路径
+        let decrypted_path = temp_path;
+
         // 解密文件
-        crypto.decrypt_path(&encrypted_path).expect("File decryption failed");
+        crypto.decrypt_path(&encrypted_path, &decrypted_path).expect("File decryption failed");
 
         // 验证解密内容
-        let decrypted_content = fs::read(&temp_path).expect("Failed to read decrypted file");
+        let decrypted_content = fs::read(&decrypted_path).expect("Failed to read decrypted file");
         assert_eq!(decrypted_content, test_content, "Decrypted file content does not match original");
     }
 
@@ -508,22 +519,27 @@ mod tests {
         let file2 = subdir.join("file2.txt");
         fs::write(&file2, b"Content of file 2 with special characters: \xE6\xB5\x8B\xE8\xAF\x95\xE7\x9B\xAE\xE5\xBD\x95\xE5\x8A\xA0\xE5\xAF\x86").expect("Failed to write file2");
 
+        // 创建加密文件的目标路径
+        let encrypted_path = temp_dir_path.join("test_dir.esz");
+
         // 加密目录
-        crypto.encrypt_path(&test_dir).expect("Directory encryption failed");
+        crypto.encrypt_path(&test_dir, &encrypted_path).expect("Directory encryption failed");
 
         // 验证加密文件存在
-        let encrypted_path = temp_dir_path.join("test_dir.esz");
         assert!(encrypted_path.exists(), "Encrypted directory file not created");
 
         // 删除原始目录以确保解密效果
         fs::remove_dir_all(&test_dir).expect("Failed to remove original directory");
 
+        // 创建解密目录的目标路径
+        let decrypted_dir = test_dir;
+
         // 解密目录
-        crypto.decrypt_path(&encrypted_path).expect("Directory decryption failed");
+        crypto.decrypt_path(&encrypted_path, &decrypted_dir).expect("Directory decryption failed");
 
         // 验证解密后的目录结构和内容
-        assert!(test_dir.exists(), "Decrypted directory not created");
-        let decrypted_subdir = test_dir.join("subdir");
+        assert!(decrypted_dir.exists(), "Decrypted directory not created");
+        let decrypted_subdir = decrypted_dir.join("subdir");
         assert!(decrypted_subdir.exists(), "Decrypted subdirectory not found");
         assert!(file1.exists(), "Decrypted file1 not found");
         assert!(file2.exists(), "Decrypted file2 not found");
