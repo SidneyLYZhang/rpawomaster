@@ -194,6 +194,10 @@ impl SecureCrypto {
         let mut input_file = fs::File::open(input_path)
             .with_context(|| format!("Failed to open input file: {:?}", input_path))?;
 
+        let filename = input_path.file_name()          // -> Some(OsStr)
+                                        .and_then(|s| s.to_str()) // -> Option<&str>
+                                        .unwrap_or("");
+
         // 读取文件内容
         let mut data = Vec::new();
         input_file
@@ -204,12 +208,14 @@ impl SecureCrypto {
         let encrypted_data = self.encrypt_string(&general_purpose::STANDARD.encode(&data))?;
 
         // 确保输出目录存在
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
+        if output_path.is_dir() {
+            fs::create_dir_all(output_path)?;
+        } else {
+            return Err(anyhow::anyhow!("output_path必须为路径"));
         }
-
+        
         // 写入加密文件
-        let mut output_file = fs::File::create(output_path)
+        let mut output_file = fs::File::create(output_path.join(format!("{}.{}", filename, EXTENSION)))
             .with_context(|| format!("Failed to create output file: {:?}", output_path))?;
         output_file
             .write_all(&encrypted_data)
@@ -221,6 +227,10 @@ impl SecureCrypto {
     fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<()> {
         let mut input_file = fs::File::open(input_path)
             .with_context(|| format!("Failed to open input file: {:?}", input_path))?;
+        let filename = input_path.file_stem()          // -> Some(OsStr)
+                                        .and_then(|s| s.to_str()) // -> Option<&str>
+                                        .unwrap_or("");
+
 
         // 读取加密内容
         let mut encrypted_data = Vec::new();
@@ -235,12 +245,14 @@ impl SecureCrypto {
             .context("Failed to decode base64 data")?;
 
         // 确保输出目录存在
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
+        if output_path.is_dir() {
+            fs::create_dir_all(output_path)?;
+        } else {
+            return Err(anyhow::anyhow!("output_path必须为路径"));
         }
 
         // 写入原始文件
-        let mut output_file = fs::File::create(output_path)
+        let mut output_file = fs::File::create(output_path.join(filename))
             .with_context(|| format!("Failed to create output file: {:?}", output_path))?;
         output_file
             .write_all(&decrypted_data)
@@ -469,27 +481,34 @@ mod tests {
         let test_content = b"Test file content with special characters: \xE6\xB5\x8B\xE8\xAF\x95\xE6\x96\x87\xE6\x9C\xAC \xC2\xA3\xC2\xA5\xE2\x82\xAC";
         temp_file.write_all(test_content).expect("Failed to write to temp file");
         let temp_path = temp_file.path().to_path_buf();
+        let filename = temp_path.file_stem()          // -> Some(OsStr)
+                                        .and_then(|s| s.to_str()) // -> Option<&str>
+                                        .unwrap_or("");
 
         // 创建加密文件的目标路径
-        let encrypted_path = temp_path.with_extension("esz");
+        let encrypted_path = temp_path.parent().unwrap();
 
         // 加密文件
         crypto.encrypt_path(&temp_path, &encrypted_path).expect("File encryption failed");
 
         // 验证加密文件存在
-        assert!(encrypted_path.exists(), "Encrypted file not created");
+        let mut encrypted_file_path = encrypted_path.join(filename);
+        encrypted_file_path.set_extension("esz");
+        assert!(encrypted_file_path.exists(), "Encrypted file not created");
 
         // 删除原始文件以确保解密效果
         fs::remove_file(&temp_path).expect("Failed to remove original file");
 
         // 创建解密文件的目标路径
-        let decrypted_path = temp_path;
+        let mut decrypted_file_path = encrypted_path.join(filename);
+        decrypted_file_path.set_extension("txt"); // 恢复原始扩展名
 
         // 解密文件
-        crypto.decrypt_path(&encrypted_path, &decrypted_path).expect("File decryption failed");
+        crypto.decrypt_path(&encrypted_file_path, &decrypted_file_path).expect("File decryption failed");
 
-        // 验证解密内容
-        let decrypted_content = fs::read(&decrypted_path).expect("Failed to read decrypted file");
+        // 验证解密文件存在且内容正确
+        assert!(decrypted_file_path.exists(), "Decrypted file not created");
+        let decrypted_content = fs::read(&decrypted_file_path).expect("Failed to read decrypted file");
         assert_eq!(decrypted_content, test_content, "Decrypted file content does not match original");
     }
 
