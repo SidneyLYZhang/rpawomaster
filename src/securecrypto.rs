@@ -30,7 +30,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use tar::{Archive, Builder};
-use tempfile::NamedTempFile;
+use flate2::{write::GzEncoder, Compression};
+use flate2::read::GzDecoder;
+use tempfile::{NamedTempFile, dir::tempdir};
 use walkdir::WalkDir;
 use rand::rngs::OsRng;
 
@@ -267,14 +269,15 @@ impl SecureCrypto {
 
     fn encrypt_dir(&self, dir_path: &Path, target_path: &Path) -> Result<()> {
         // 创建临时tar文件
-        let temp_dir = tempfile::tempdir()?;
-        let temp_tar_path = temp_dir.path().join("temp.tar");
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let temp_tar_path = temp_dir.path().join("temp.tgz");
         
         // 创建tar归档
         self.create_tar_archive(dir_path, &temp_tar_path)?;
         
         // 加密tar文件到指定目标位置
         self.encrypt_file(&temp_tar_path, target_path)?;
+        temp_dir.close()?;
         
         // 临时目录自动清理
         Ok(())
@@ -282,114 +285,86 @@ impl SecureCrypto {
 
     fn decrypt_dir(&self, input_path: &Path, output_dir: &Path) -> Result<()> {
         // 创建临时目录用于解包
-        let temp_dir = tempfile::tempdir()?;
-        let temp_path = temp_dir.path();
+        let temp_dir = tempdir().expect("Failed to create temp directory");
         
         // 解密tar文件到临时目录
-        let decrypted_tar_path = temp_path.join("decrypted.tar");
-        self.decrypt_file_to(input_path, &decrypted_tar_path)?;
+        let decrypted_tar_path = temp_dir.path();
+        self.decrypt_file(input_path, &decrypted_tar_path)?;
         
-        // 确保输出目录不存在或为空
-        if output_dir.exists() {
-            fs::remove_dir_all(output_dir)?;
-        }
-        
-        // 创建输出目录的父目录
-        if let Some(parent) = output_dir.parent() {
-            fs::create_dir_all(parent)?;
+        // 确保输出目录存在
+        if !output_dir.exists() {
+            fs::create_dir_all(output_dir)?;
         }
         
         // 解包tar文件到指定输出目录
         self.extract_tar_archive(&decrypted_tar_path, output_dir)?;
         
         // 临时目录自动删除
-        Ok(())
-    }
-
-    fn decrypt_file_to(&self, input_path: &Path, output_path: &Path) -> Result<()> {
-        let mut input_file = fs::File::open(input_path)
-            .with_context(|| format!("Failed to open input file: {:?}", input_path))?;
-
-        // 读取加密内容
-        let mut encrypted_data = Vec::new();
-        input_file
-            .read_to_end(&mut encrypted_data)
-            .context("Failed to read encrypted data")?;
-
-        // 解密内容
-        let decrypted_base64 = self.decrypt_string(&IVec::from(encrypted_data))?;
-        let decrypted_data = general_purpose::STANDARD
-            .decode(&decrypted_base64)
-            .context("Failed to decode base64 data")?;
-
-        // 确保输出目录存在
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // 写入文件
-        let mut output_file = fs::File::create(output_path)
-            .with_context(|| format!("Failed to create output file: {:?}", output_path))?;
-        output_file
-            .write_all(&decrypted_data)
-            .context("Failed to write decrypted data")?;
-
+        temp_dir.close()?;
         Ok(())
     }
 
     fn create_tar_archive(&self, source_dir: &Path, tar_path: &Path) -> Result<()> {
-        let tar_file = File::create(tar_path)?;
-        let mut tar_builder = Builder::new(tar_file);
-        
-        // 显式添加所有文件和子目录以确保目录结构完整
+        // 把 `src_dir` 整个目录打包成 `dst_file`。
+        // 如果 `dst_file` 以 `.gz` / `.tgz` 结尾，就自动用 gzip 压缩。
+        // 创建输出文件
+        let out_file = File::create(tar_path)?;
+
+        // 根据扩展名决定是否压缩
+        let extension = tar_path.extension().and_then(|e| e.to_str());
+        let use_gzip = matches!(extension, Some("gz") | Some("tgz"));
+
+        // 如果压缩就用 GzEncoder 包装，否则直接写裸 tar
+        let mut tar_builder = if use_gzip {
+            let enc = GzEncoder::new(out_file, Compression::default());
+            Builder::new(enc)
+        } else {
+            Builder::new(out_file)
+        };
+
+        // 遍历目录
         for entry in WalkDir::new(source_dir) {
             let entry = entry?;
-            let path = entry.path();
-            
-            if path.is_file() {
-                let relative_path = path.strip_prefix(source_dir)?;
-                tar_builder.append_path_with_name(path, relative_path)?;
-            } else if path.is_dir() && path != source_dir {
-                let relative_path = path.strip_prefix(source_dir)?;
-                let mut header = tar::Header::new_gnu();
-                header.set_mode(0o755);
-                header.set_size(0);
-                header.set_cksum();
-                tar_builder.append_data(&mut header, relative_path, std::io::empty())?;
+            let file_path = entry.path();
+            let relative_path = file_path.strip_prefix(source_dir).unwrap();
+
+            if file_path.is_file() {
+                // 把单个文件追加进 tar
+                let mut file = File::open(file_path)?;
+                tar_builder.append_file(relative_path, &mut file)?;
+            } else if file_path.is_dir() {
+                // 空目录也需要显式追加，否则不会出现在归档里
+                tar_builder.append_dir(relative_path, file_path)?;
             }
         }
-        
+
+        // Builder 会在 drop 时 flush，但最好手动 finish
         tar_builder.finish()?;
         Ok(())
     }
 
     fn extract_tar_archive(&self, tar_path: &Path, output_dir: &Path) -> Result<()> {
-        let tar_file = File::open(tar_path)?;
-        let mut archive = Archive::new(tar_file);
+        // 创建或清空输出目录
+        if !output_dir.exists() {
+            fs::create_dir_all(output_dir)?;
+        }
+
+        // 根据扩展名决定是否用 gzip 解码
+        let extension = tar_path.extension().and_then(|e| e.to_str());
+        let use_gzip = matches!(extension, Some("gz") | Some("tgz"));
+
+        let file = File::open(tar_path)?;
+        let mut archive = if use_gzip {
+            let dec = GzDecoder::new(file);
+            Archive::new(dec)
+        } else {
+            Archive::new(file)
+        };
+
+        // 解包全部条目
         archive.unpack(output_dir)?;
         Ok(())
     }
-
-    fn copy_dir_recursive(&self, src: &Path, dst: &Path) -> Result<()> {
-        if !dst.exists() {
-            fs::create_dir_all(dst)?;
-        }
-        
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let src_path = entry.path();
-            let dst_path = dst.join(entry.file_name());
-            
-            if entry.file_type()?.is_dir() {
-                self.copy_dir_recursive(&src_path, &dst_path)?;
-            } else {
-                fs::copy(&src_path, &dst_path)?;
-            }
-        }
-        Ok(())
-    }
-
-
 }
 
 // 密钥生成工具函数
