@@ -32,7 +32,7 @@ use std::{
 use tar::{Archive, Builder};
 use flate2::{write::GzEncoder, Compression};
 use flate2::read::GzDecoder;
-use tempfile::{NamedTempFile, dir::tempdir};
+use tempfile::tempdir;
 use walkdir::WalkDir;
 use rand::rngs::OsRng;
 
@@ -317,16 +317,23 @@ impl SecureCrypto {
         // 如果压缩就用 GzEncoder 包装，否则直接写裸 tar
         let mut tar_builder = if use_gzip {
             let enc = GzEncoder::new(out_file, Compression::default());
-            Builder::new(enc)
+            Builder::new(Box::new(enc) as Box<dyn Write>)
         } else {
-            Builder::new(out_file)
+            Builder::new(Box::new(out_file) as Box<dyn Write>)
         };
 
         // 遍历目录
         for entry in WalkDir::new(source_dir) {
             let entry = entry?;
             let file_path = entry.path();
-            let relative_path = file_path.strip_prefix(source_dir).unwrap();
+            
+            // 跳过源目录本身
+            if file_path == source_dir {
+                continue;
+            }
+            
+            let relative_path = file_path.strip_prefix(source_dir)
+                .unwrap_or_else(|_| file_path.file_name().unwrap().as_ref());
 
             if file_path.is_file() {
                 // 把单个文件追加进 tar
@@ -334,11 +341,15 @@ impl SecureCrypto {
                 tar_builder.append_file(relative_path, &mut file)?;
             } else if file_path.is_dir() {
                 // 空目录也需要显式追加，否则不会出现在归档里
-                tar_builder.append_dir(relative_path, file_path)?;
+                // 只有当目录为空时才需要显式添加
+                let mut entries = fs::read_dir(file_path)?;
+                if entries.next().is_none() {
+                    tar_builder.append_dir(relative_path, file_path)?;
+                }
             }
         }
 
-        // Builder 会在 drop 时 flush，但最好手动 finish
+        // Builder 会在 drop 时 flush , 手动 finish
         tar_builder.finish()?;
         Ok(())
     }
@@ -356,9 +367,9 @@ impl SecureCrypto {
         let file = File::open(tar_path)?;
         let mut archive = if use_gzip {
             let dec = GzDecoder::new(file);
-            Archive::new(dec)
+            Archive::new(Box::new(dec) as Box<dyn Read>)
         } else {
-            Archive::new(file)
+            Archive::new(Box::new(file) as Box<dyn Read>)
         };
 
         // 解包全部条目
@@ -367,22 +378,7 @@ impl SecureCrypto {
     }
 }
 
-// 密钥生成工具函数
-// pub fn generate_keys() -> Result<(String, String)> {
-//     let mut rng = rand::thread_rng();
-//     let private_key = RsaPrivateKey::new(&mut rng, RSA_KEY_SIZE)
-//         .context("Failed to generate RSA key pair")?;
-//     let public_key = RsaPublicKey::from(&private_key);
-
-//     let private_pem = private_key
-//         .to_pkcs8_pem(LineEnding::LF)
-//         .context("Failed to serialize private key")?
-//         .to_string();
-//     let public_pem = public_key
-//         .to_public_key_pem(LineEnding::LF)
-//         .context("Failed to serialize public key")?;
-//     Ok((public_pem, private_pem))
-// }
+/// 生成RSA密钥对
 pub fn generate_rsa_keypair() -> Result<(String, String), String> {
     let mut rng = OsRng;
     let private_key = RsaPrivateKey::new(&mut rng, RSA_KEY_SIZE)
@@ -402,9 +398,8 @@ pub fn generate_rsa_keypair() -> Result<(String, String), String> {
 mod tests {
     use super::*;
     use sled::IVec;
-    use tempfile::{NamedTempFile, tempdir};
+    use tempfile::tempdir;
     use std::fs;
-    use std::io::Write;
 
 
     #[test]
@@ -498,52 +493,126 @@ mod tests {
         let temp_dir = tempdir().expect("Failed to create temp directory");
         let temp_dir_path = temp_dir.path();
 
-        // 创建测试目录结构
-        let test_dir = temp_dir_path.join("test_dir");
+        // 创建复杂测试目录结构
+        let test_dir = temp_dir_path.join("complex_test_dir");
         fs::create_dir(&test_dir).expect("Failed to create test directory");
 
-        // 创建子目录
-        let subdir = test_dir.join("subdir");
-        fs::create_dir(&subdir).expect("Failed to create subdirectory");
+        // 创建多级嵌套目录
+        let nested_dir = test_dir.join("level1").join("level2").join("level3");
+        fs::create_dir_all(&nested_dir).expect("Failed to create nested directories");
 
-        // 创建文件1
-        let file1 = test_dir.join("file1.txt");
-        fs::write(&file1, b"Content of file 1").expect("Failed to write file1");
+        // 创建空目录
+        let empty_dir = test_dir.join("empty_dir");
+        fs::create_dir(&empty_dir).expect("Failed to create empty directory");
 
-        // 创建文件2
-        let file2 = subdir.join("file2.txt");
-        fs::write(&file2, b"Content of file 2 with special characters: \xE6\xB5\x8B\xE8\xAF\x95\xE7\x9B\xAE\xE5\xBD\x95\xE5\x8A\xA0\xE5\xAF\x86").expect("Failed to write file2");
+        // 创建特殊字符目录名
+        let special_dir = test_dir.join("目录_файл_日本語");
+        fs::create_dir(&special_dir).expect("Failed to create special directory");
+
+        // 创建各种测试文件
+        let test_files = vec![
+            // 普通文本文件
+            (test_dir.join("readme.txt"), b"This is a readme file with basic content.".to_vec()),
+            // 空文件
+            (test_dir.join("empty.txt"), b"".to_vec()),
+            // 大文件 (10KB)
+            (test_dir.join("large.txt"), vec![b'A'; 10240]),
+            // 二进制文件
+            (test_dir.join("binary.bin"), vec![0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD]),
+            // 特殊字符内容
+            (test_dir.join("unicode.txt"), "测试文件内容 🚀 特殊字符: áéíóú 中文 🎉".as_bytes().to_vec()),
+            // 隐藏文件
+            (test_dir.join(".hidden"), b"Hidden file content".to_vec()),
+            // 多级嵌套文件
+            (nested_dir.join("deep.txt"), b"This file is deeply nested".to_vec()),
+            // 特殊目录中的文件
+            (special_dir.join("特殊文件.txt"), "特殊目录中的文件内容".as_bytes().to_vec()),
+            // 长文件名
+            (test_dir.join("very_long_filename_that_exceeds_normal_length_limits.txt"), b"File with very long name".to_vec()),
+        ];
+
+        // 创建所有测试文件
+        for (file_path, content) in &test_files {
+            fs::create_dir_all(file_path.parent().unwrap()).expect("Failed to create parent directories");
+            fs::write(file_path, content).expect("Failed to write test file");
+        }
+
+        // 记录原始文件信息用于验证
+        let mut original_files = Vec::new();
+        for entry in WalkDir::new(&test_dir) {
+            let entry = entry.expect("Failed to walk directory");
+            if entry.file_type().is_file() {
+                let content = fs::read(entry.path()).expect("Failed to read file");
+                original_files.push((
+                    entry.path().strip_prefix(&test_dir).unwrap().to_path_buf(),
+                    content,
+                ));
+            }
+        }
 
         // 创建加密文件的目标路径
         let filename = test_dir.file_name().unwrap().to_str().unwrap();
         let encrypted_path = temp_dir_path.join(format!("{}.esz", filename));
 
-        // 加密目录
+        // 测试目录加密
         crypto.encrypt_path(&test_dir, &encrypted_path).expect("Directory encryption failed");
-
-        // 验证加密文件存在
         assert!(encrypted_path.exists(), "Encrypted directory file not created");
+        assert!(encrypted_path.metadata().unwrap().len() > 0, "Encrypted file is empty");
 
-        // 删除原始目录以确保解密效果
-        fs::remove_dir_all(&test_dir).expect("Failed to remove original directory");
+        // 验证原始目录存在
+        assert!(test_dir.exists(), "Original directory should still exist");
 
         // 创建解密目录的目标路径
-        let decrypted_dir = temp_dir_path.join("decrypted_test_dir");
+        let decrypted_dir = temp_dir_path.join("decrypted_complex_dir");
 
-        // 解密目录
+        // 测试目录解密
         crypto.decrypt_path(&encrypted_path, &decrypted_dir).expect("Directory decryption failed");
-
-        // 验证解密后的目录结构和内容
         assert!(decrypted_dir.exists(), "Decrypted directory not created");
-        let decrypted_subdir = decrypted_dir.join("subdir");
-        assert!(decrypted_subdir.exists(), "Decrypted subdirectory not found");
-        let decrypted_file1 = decrypted_dir.join("file1.txt");
-        let decrypted_file2 = decrypted_subdir.join("file2.txt");
-        assert!(decrypted_file1.exists(), "Decrypted file1 not found");
-        assert!(decrypted_file2.exists(), "Decrypted file2 not found");
 
-        // 验证文件内容
-        assert_eq!(fs::read(&decrypted_file1).expect("Failed to read decrypted file1"), b"Content of file 1");
-        assert_eq!(fs::read(&decrypted_file2).expect("Failed to read decrypted file2"), b"Content of file 2 with special characters: \xE6\xB5\x8B\xE8\xAF\x95\xE7\x9B\xAE\xE5\xBD\x95\xE5\x8A\xA0\xE5\xAF\x86");
+        // 验证目录结构完整性
+        for (relative_path, original_content) in &original_files {
+            let decrypted_path = decrypted_dir.join(relative_path);
+            assert!(decrypted_path.exists(), "File not found: {:?}", relative_path);
+            
+            let decrypted_content = fs::read(&decrypted_path).expect("Failed to read decrypted file");
+            assert_eq!(&decrypted_content, original_content, "Content mismatch for file: {:?}", relative_path);
+        }
+
+        // 验证目录结构完整性
+        let mut decrypted_files = Vec::new();
+        for entry in WalkDir::new(&decrypted_dir) {
+            let entry = entry.expect("Failed to walk decrypted directory");
+            if entry.file_type().is_file() {
+                decrypted_files.push(entry.path().strip_prefix(&decrypted_dir).unwrap().to_path_buf());
+            }
+        }
+
+        assert_eq!(decrypted_files.len(), original_files.len(), "File count mismatch");
+
+        // 测试空目录加密解密
+        let empty_test_dir = temp_dir_path.join("empty_test_dir");
+        fs::create_dir(&empty_test_dir).expect("Failed to create empty test directory");
+        
+        let empty_encrypted_path = temp_dir_path.join("empty.esz");
+        crypto.encrypt_path(&empty_test_dir, &empty_encrypted_path).expect("Empty directory encryption failed");
+        assert!(empty_encrypted_path.exists(), "Empty directory encryption failed");
+
+        let empty_decrypted_dir = temp_dir_path.join("decrypted_empty_dir");
+        crypto.decrypt_path(&empty_encrypted_path, &empty_decrypted_dir).expect("Empty directory decryption failed");
+        assert!(empty_decrypted_dir.exists(), "Empty directory decryption failed");
+        assert!(empty_decrypted_dir.read_dir().unwrap().next().is_none(), "Decrypted empty directory should be empty");
+
+        // 测试单文件加密（应该保持为文件而非目录）
+        let single_file = temp_dir_path.join("single.txt");
+        fs::write(&single_file, b"Single file content").expect("Failed to create single file");
+        
+        let single_encrypted_path = temp_dir_path.join("single.esz");
+        crypto.encrypt_path(&single_file, &single_encrypted_path).expect("Single file encryption failed");
+        
+        let single_decrypted_path = temp_dir_path.join("decrypted_single.txt");
+        crypto.decrypt_path(&single_encrypted_path, &single_decrypted_path).expect("Single file decryption failed");
+        
+        assert!(single_decrypted_path.is_file(), "Single file should decrypt to file");
+        assert_eq!(fs::read(&single_decrypted_path).unwrap(), b"Single file content");
     }
 }
