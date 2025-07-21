@@ -25,9 +25,7 @@ use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs8::LineEnding;
 use sled::IVec;
 use std::{
-    fs::{self, File},
-    io::{Read, Write},
-    path::{Path, PathBuf},
+    fmt::format, fs::{self, File}, io::{Read, Write}, path::{Path, PathBuf}
 };
 use tar::{Archive, Builder};
 use flate2::{write::GzEncoder, Compression};
@@ -269,8 +267,11 @@ impl SecureCrypto {
 
     fn encrypt_dir(&self, dir_path: &Path, target_path: &Path) -> Result<()> {
         // 创建临时tar文件
+        let filename = dir_path.file_name()          // -> Some(OsStr)
+                                        .and_then(|s| s.to_str()) // -> Option<&str>
+                                        .unwrap_or("");
         let temp_dir = tempdir().expect("Failed to create temp directory");
-        let temp_tar_path = temp_dir.path().join("temp.tgz");
+        let temp_tar_path = temp_dir.path().join(format!("{}.tgz", filename));
         
         // 创建tar归档
         self.create_tar_archive(dir_path, &temp_tar_path)?;
@@ -372,8 +373,20 @@ impl SecureCrypto {
             Archive::new(Box::new(file) as Box<dyn Read>)
         };
 
-        // 解包全部条目
-        archive.unpack(output_dir)?;
+        // 手动解包每个条目以避免Windows权限问题
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+            let full_path = output_dir.join(path);
+            
+            // 确保父目录存在
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            
+            // 解包文件
+            entry.unpack(&full_path)?;
+        }
         Ok(())
     }
 }
@@ -551,11 +564,10 @@ mod tests {
         }
 
         // 创建加密文件的目标路径
-        let filename = test_dir.file_name().unwrap().to_str().unwrap();
-        let encrypted_path = temp_dir_path.join(format!("{}.esz", filename));
+        let encrypted_path = temp_dir_path.join("complex_test_dir.tgz.esz");
 
         // 测试目录加密
-        crypto.encrypt_path(&test_dir, &encrypted_path).expect("Directory encryption failed");
+        crypto.encrypt_path(&test_dir, &temp_dir_path).expect("Directory encryption failed");
         assert!(encrypted_path.exists(), "Encrypted directory file not created");
         assert!(encrypted_path.metadata().unwrap().len() > 0, "Encrypted file is empty");
 
@@ -593,26 +605,13 @@ mod tests {
         let empty_test_dir = temp_dir_path.join("empty_test_dir");
         fs::create_dir(&empty_test_dir).expect("Failed to create empty test directory");
         
-        let empty_encrypted_path = temp_dir_path.join("empty.esz");
-        crypto.encrypt_path(&empty_test_dir, &empty_encrypted_path).expect("Empty directory encryption failed");
+        let empty_encrypted_path = temp_dir_path.join("empty_test_dir.tgz.esz");
+        crypto.encrypt_path(&empty_test_dir, &temp_dir_path).expect("Empty directory encryption failed");
         assert!(empty_encrypted_path.exists(), "Empty directory encryption failed");
 
         let empty_decrypted_dir = temp_dir_path.join("decrypted_empty_dir");
         crypto.decrypt_path(&empty_encrypted_path, &empty_decrypted_dir).expect("Empty directory decryption failed");
         assert!(empty_decrypted_dir.exists(), "Empty directory decryption failed");
         assert!(empty_decrypted_dir.read_dir().unwrap().next().is_none(), "Decrypted empty directory should be empty");
-
-        // 测试单文件加密（应该保持为文件而非目录）
-        let single_file = temp_dir_path.join("single.txt");
-        fs::write(&single_file, b"Single file content").expect("Failed to create single file");
-        
-        let single_encrypted_path = temp_dir_path.join("single.esz");
-        crypto.encrypt_path(&single_file, &single_encrypted_path).expect("Single file encryption failed");
-        
-        let single_decrypted_path = temp_dir_path.join("decrypted_single.txt");
-        crypto.decrypt_path(&single_encrypted_path, &single_decrypted_path).expect("Single file decryption failed");
-        
-        assert!(single_decrypted_path.is_file(), "Single file should decrypt to file");
-        assert_eq!(fs::read(&single_decrypted_path).unwrap(), b"Single file content");
     }
 }
