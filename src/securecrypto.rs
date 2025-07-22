@@ -16,18 +16,17 @@ use aes::{
     cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit},
     Aes256,
 };
-use bincode::de;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rand::RngCore;
-use base64::{engine::general_purpose, Engine as _};
 use cbc::{Decryptor, Encryptor};
 use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs8::LineEnding;
 use sled::IVec;
 use std::{
-    fmt::format, fs::{self, File}, io::{Read, Write}, path::{Path, PathBuf}
+    fs::{self, File}, io::{Read, Write}, path::Path
 };
+use std::io::{BufReader, BufWriter};
 use tar::{Archive, Builder};
 use flate2::{write::GzEncoder, Compression};
 use flate2::read::GzDecoder;
@@ -119,6 +118,11 @@ impl SecureCrypto {
             .decrypt(Oaep::new::<sha2::Sha256>(), encrypted_key)
             .context("RSA decryption failed")?;
 
+        // 验证AES密钥长度
+        if aes_key.len() != 32 {
+            return Err(anyhow!("Invalid AES key length: expected 32 bytes, got {}", aes_key.len()));
+        }
+
         // 用AES解密文本
         let plaintext = self.aes_decrypt(ciphertext, &aes_key, iv)?;
         String::from_utf8(plaintext).context("Decrypted text is not valid UTF-8")
@@ -141,9 +145,10 @@ impl SecureCrypto {
         let source_path = source_path.as_ref();
         let target_path = target_path.as_ref();
         
-        if source_path.is_file() && source_path.extension().map_or(false, |e| e == "esz") {
+        if source_path.is_file() && source_path.extension().map_or(false, |e| e == EXTENSION) {
+            let name = source_path.file_stem().unwrap().to_str().unwrap();
             // 检查目标路径：如果是目录，则解压；如果是文件，则解密为文件
-            if target_path.extension().is_none() || target_path.is_dir() {
+            if name.contains(".tgz") {
                 // 目标路径看起来像目录，执行目录解压
                 self.decrypt_dir(source_path, target_path)
             } else {
@@ -194,19 +199,37 @@ impl SecureCrypto {
     fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<()> {
         let mut input_file = fs::File::open(input_path)
             .with_context(|| format!("Failed to open input file: {:?}", input_path))?;
-
         let filename = input_path.file_name()          // -> Some(OsStr)
                                         .and_then(|s| s.to_str()) // -> Option<&str>
                                         .unwrap_or("");
 
         // 读取文件内容
         let mut data = Vec::new();
-        input_file
-            .read_to_end(&mut data)
-            .context("Failed to read file content")?;
+        let mut reader = BufReader::new(&mut input_file);
+        reader.read_to_end(&mut data)?;
+
+        // 生成随机AES密钥和IV
+        let (aes_key, iv) = self.generate_aes_components();
 
         // 加密内容
-        let encrypted_data = self.encrypt_string(&general_purpose::STANDARD.encode(&data))?;
+        let encrypted_data = self.aes_encrypt(data.as_ref(), &aes_key, &iv).unwrap();
+
+        // 用RSA加密AES密钥
+        let encrypted_key = self
+            .public_key
+            .encrypt(
+                &mut rand::thread_rng(),
+                Oaep::new::<sha2::Sha256>(),
+                &aes_key,
+            )
+            .context("RSA encryption failed")?;
+
+        // 组装数据包: [RSA加密的密钥长度(4B) | RSA加密的密钥 | IV(16B) | AES加密的数据]
+        let mut result = Vec::with_capacity(4 + encrypted_key.len() + 16 + encrypted_data.len());
+        result.extend_from_slice(&(encrypted_key.len() as u32).to_le_bytes());
+        result.extend_from_slice(&encrypted_key);
+        result.extend_from_slice(&iv);
+        result.extend_from_slice(&encrypted_data);
 
         // 确保输出目录存在
         if !output_path.exists() {
@@ -215,11 +238,10 @@ impl SecureCrypto {
         let output_file_path = output_path.join(format!("{}.{}", filename, EXTENSION));
         
         // 写入加密文件
-        let mut output_file = fs::File::create(&output_file_path)
-            .with_context(|| format!("Failed to create output file: {:?}", output_file_path))?;
-        output_file
-            .write_all(&encrypted_data)
-            .context("Failed to write encrypted data")?;
+        let mut output_file = File::create(&output_file_path).unwrap();
+        let mut writer = BufWriter::new(&mut output_file);
+        writer
+            .write_all(&result).unwrap();
 
         Ok(())
     }
@@ -232,23 +254,54 @@ impl SecureCrypto {
             return Err(anyhow!("Invalid input file extension"));
         }
 
-        let mut input_file = fs::File::open(input_path)
-            .with_context(|| format!("Failed to open input file: {:?}", input_path))?;
+        let mut input_file = File::open(input_path)
+            .with_context(|| format!("Failed to open input file: {:?}", input_path)).unwrap();
         let filename = input_path.file_stem()          // -> Some(OsStr)
                                         .and_then(|s| s.to_str()) // -> Option<&str>
                                         .unwrap_or("");
         
         // 读取加密内容
         let mut encrypted_data = Vec::new();
-        input_file
+        let mut reader = BufReader::new(&mut input_file);
+        reader
             .read_to_end(&mut encrypted_data)
             .context("Failed to read encrypted data")?;
 
-        // 解密内容
-        let decrypted_base64 = self.decrypt_string(&IVec::from(encrypted_data))?;
-        let decrypted_data = general_purpose::STANDARD
-            .decode(&decrypted_base64)
-            .context("Failed to decode base64 data")?;
+        // 解析数据包结构
+        if encrypted_data.len() < 4 + 16 {
+            return Err(anyhow!("Invalid encrypted data format: too short ({} bytes)", encrypted_data.len()));
+        }
+
+        let key_len = u32::from_le_bytes([encrypted_data[0], encrypted_data[1], encrypted_data[2], encrypted_data[3]]) as usize;
+        let key_start = 4;
+        let key_end = key_start + key_len;
+        let iv_start = key_end;
+        let iv_end = iv_start + 16;
+        let ciphertext_start = iv_end;
+
+        if encrypted_data.len() < ciphertext_start {
+            return Err(anyhow!("Invalid encrypted data format: key_len {} exceeds data length {} (needs at least {})", 
+                                key_len, encrypted_data.len(), ciphertext_start));
+        }
+
+        // 提取各部分数据
+        let encrypted_key = &encrypted_data[key_start..key_end];
+        let iv = &encrypted_data[iv_start..iv_end];
+        let ciphertext = &encrypted_data[ciphertext_start..];
+
+        // 用RSA解密AES密钥
+        let aes_key = self
+            .private_key
+            .decrypt(Oaep::new::<sha2::Sha256>(), encrypted_key)
+            .context("RSA decryption failed").unwrap();
+
+        // 验证AES密钥长度
+        if aes_key.len() != 32 {
+            return Err(anyhow!("Invalid AES key length: expected 32 bytes, got {}", aes_key.len()));
+        }
+
+        // 用AES解密文本
+        let decrypted_data = self.aes_decrypt(&ciphertext, &aes_key, &iv).unwrap();
 
         // 确保输出目录存在
         if !output_path.exists() {
@@ -257,11 +310,12 @@ impl SecureCrypto {
 
         // 写入原始文件
         let output_file_path = output_path.join(filename);
-        let mut output_file = fs::File::create(&output_file_path)
-            .with_context(|| format!("Failed to create output file: {:?}", output_file_path))?;
-        output_file
+        
+        let mut output_file = File::create(&output_file_path).unwrap();
+        let mut writer = BufWriter::new(&mut output_file);
+        writer
             .write_all(&decrypted_data)
-            .context("Failed to write decrypted data")?;
+            .context("Failed to write decrypted data").unwrap();
 
         Ok(())
     }

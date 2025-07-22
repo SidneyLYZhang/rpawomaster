@@ -112,14 +112,10 @@ enum Cli {
         user: Option<String>,
     },
 
-    /// test part
-    Test {
-        /// Text to test
-        text: String,
-
-        /// User to test for
-        #[arg(short, long)]
-        user: Option<String>,
+    /// Encrypt or decrypt files/directories
+    Crypt {
+        #[command(subcommand)]
+        subcommand: CryptSubcommand,
     },
 }
 
@@ -130,6 +126,39 @@ enum GenSubcommand {
     
     /// Generate a memorable password
     Memorable(GenMemorableArgs),
+}
+
+#[derive(Debug, Parser)]
+enum CryptSubcommand {
+    /// Encrypt a file or directory
+    En {
+        /// User to use for encryption
+        #[arg(short, long)]
+        user: Option<String>,
+        
+        /// Source path to encrypt
+        #[arg(short, long)]
+        source: String,
+        
+        /// Target path to save encrypted file
+        #[arg(short, long)]
+        target: String,
+    },
+    
+    /// Decrypt a file or directory
+    De {
+        /// User to use for decryption
+        #[arg(short, long)]
+        user: Option<String>,
+        
+        /// Source path to decrypt
+        #[arg(short, long)]
+        source: String,
+        
+        /// Target path to save decrypted file
+        #[arg(short, long)]
+        target: String,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -303,10 +332,12 @@ fn decrypt_private_key(encrypted_private_key: &str, core_password: &str) -> Resu
     let data = hex::decode(encrypted_private_key)
         .map_err(|e| format!("Failed to decode encrypted private key: {}", e))?;
     
-    // 提取盐、nonce和密文
+    // 检查数据长度
     if data.len() < 16 + 12 {
-        return Err("Invalid encrypted private key format".to_string());
+        return Err("Encrypted private key is too short - must contain at least salt (16 bytes) and nonce (12 bytes)".to_string());
     }
+    
+    // 提取盐、nonce和密文
     let (salt, rest) = data.split_at(16);
     let (nonce_bytes, ciphertext) = rest.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
@@ -792,9 +823,82 @@ fn main() -> Result<(), String> {
             }
             Ok(())
         },
-        Cli::Test { text, user} => {
-            testencrypt(text, user)
-        }
+        Cli::Crypt { subcommand } => match subcommand {
+            CryptSubcommand::En { user, source, target } => {
+                // 获取用户名
+                let username = match user {
+                    Some(u) => u,
+                    None => {
+                        print!("Enter username: ");
+                        io::stdout().flush().map_err(|e| e.to_string())?;
+                        let mut input = String::new();
+                        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+                        input.trim().to_string()
+                    }
+                };
+
+                // 获取core password
+                let core_password = read_password_from_stdin("Enter core password: ")?;
+
+                // 加载配置文件
+                let config_dir = get_config_dir()?;
+                let config_file_path = config_dir.join(format!("{}.json", username));
+                let config_data = fs::read_to_string(&config_file_path)
+                    .map_err(|e| format!("Failed to read config file: {}", e))?;
+                let config: ConfigFile = serde_json::from_str(&config_data)
+                    .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+                // 解密私钥
+                let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+
+                // 初始化SecureCrypto
+                let secure_crypto = SecureCrypto::from_pem_keys(&config.public_key,&private_key)
+                    .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
+
+                // 执行加密
+                secure_crypto.encrypt_path(&source, &target)
+                    .map_err(|e| format!("Encryption failed: {}", e))?;
+                println!("Successfully encrypted '{}' to '{}'", source, target);
+                Ok(())
+            },
+            CryptSubcommand::De { user, source, target } => {
+                // 获取用户名
+                let username = match user {
+                    Some(u) => u,
+                    None => {
+                        print!("Enter username: ");
+                        io::stdout().flush().map_err(|e| e.to_string())?;
+                        let mut input = String::new();
+                        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+                        input.trim().to_string()
+                    }
+                };
+
+                // 获取core password
+                let core_password = read_password_from_stdin("Enter core password: ")?;
+
+                // 加载配置文件
+                let config_dir = get_config_dir()?;
+                let config_file_path = config_dir.join(format!("{}.json", username));
+                let config_data = fs::read_to_string(&config_file_path)
+                    .map_err(|e| format!("Failed to read config file: {}", e))?;
+                let config: ConfigFile = serde_json::from_str(&config_data)
+                    .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+                // 解密私钥
+                let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+
+                // 初始化SecureCrypto
+                let secure_crypto = SecureCrypto::from_pem_keys(&config.public_key,&private_key)
+                    .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
+
+                // 执行解密
+                secure_crypto.decrypt_path(&source, &target)
+                    .map_err(|e| format!("Decryption failed: {}", e))?;
+                println!("Successfully decrypted '{}' to '{}'", source, target);
+                Ok(())
+            }
+        },
     }
 }
 
@@ -1162,32 +1266,6 @@ fn search_passwords(text: String, user: Option<String>, vault: Option<String>) -
     }
     println!("Password: {}", decrypted_password.clone());
     println!("------------------------");
-
-    Ok(())
-}
-
-fn testencrypt(text: String, user_arg: Option<String>) -> Result<(), String> {
-    // Get core password
-    let core_password = read_password_from_stdin("Enter core password: ")?;
-
-    // Get username
-    let user = match user_arg {
-        Some(u) => u,
-        None => prompt_input("Enter username: ")?,
-    };
-
-    // Get config
-    let config = load_config(&user)?;
-    let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
-    let crypto = securecrypto::SecureCrypto::from_pem_keys(&config.public_key, &private_key)
-        .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
-
-    let encrypted = crypto.encrypt_string(&text).expect("Encryption failed");
-    println!("Encrypted: {:?}", encrypted.clone());
-
-    // Decrypt
-    let decrypted = crypto.decrypt_string(&IVec::from(encrypted)).expect("Decryption failed");
-    println!("Decrypted: {}", decrypted);
 
     Ok(())
 }
