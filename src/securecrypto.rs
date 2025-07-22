@@ -16,6 +16,7 @@ use aes::{
     cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit},
     Aes256,
 };
+use bincode::de;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rand::RngCore;
@@ -287,6 +288,10 @@ impl SecureCrypto {
     fn decrypt_dir(&self, input_path: &Path, output_dir: &Path) -> Result<()> {
         // 创建临时目录用于解包
         let temp_dir = tempdir().expect("Failed to create temp directory");
+        let filename = input_path.file_stem()          // -> Some(OsStr)
+                                        .and_then(|s| s.to_str()) // -> Option<&str>
+                                        .unwrap_or("");
+
         
         // 解密tar文件到临时目录
         let decrypted_tar_path = temp_dir.path();
@@ -298,7 +303,8 @@ impl SecureCrypto {
         }
         
         // 解包tar文件到指定输出目录
-        self.extract_tar_archive(&decrypted_tar_path, output_dir)?;
+        let tar_path = decrypted_tar_path.join(filename);
+        self.extract_tar_archive(&tar_path, output_dir)?;
         
         // 临时目录自动删除
         temp_dir.close()?;
@@ -494,6 +500,71 @@ mod tests {
         assert!(decrypted_file_path.exists(), "Decrypted file not created");
         let decrypted_content = fs::read(&decrypted_file_path).expect("Failed to read decrypted file");
         assert_eq!(decrypted_content, test_content, "Decrypted file content does not match original");
+    }
+
+    #[test]
+    fn test_tar_gz_pack_unpack() {
+        // Generate RSA key pair
+        let (private_pem, public_pem) = generate_rsa_keypair().expect("Failed to generate RSA key pair");
+        let crypto = SecureCrypto::from_pem_keys(&public_pem, &private_pem).expect("Failed to create SecureCrypto instance");
+        
+        // Create temporary directories
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let source_dir = temp_dir.path().join("source_dir");
+        let tar_path = temp_dir.path().join("test_archive.tgz");
+        let extract_dir = temp_dir.path().join("extracted_dir");
+        
+        // Create test directory structure
+        fs::create_dir(&source_dir).expect("Failed to create source directory");
+        
+        // Create files and subdirectories
+        fs::write(source_dir.join("file1.txt"), "Test content 1").expect("Failed to write file1");
+        fs::write(source_dir.join("file2.bin"), vec![0x00, 0x01, 0x02, 0xFF]).expect("Failed to write binary file");
+        
+        let subdir = source_dir.join("subdir");
+        fs::create_dir(&subdir).expect("Failed to create subdirectory");
+        fs::write(subdir.join("file3.txt"), "Nested file content").expect("Failed to write nested file");
+        
+        // Create empty directory
+        let empty_dir = source_dir.join("empty_dir");
+        fs::create_dir(&empty_dir).expect("Failed to create empty directory");
+        
+        // Pack directory into tgz archive
+        crypto.create_tar_archive(&source_dir, &tar_path).expect("Failed to create tgz archive");
+        
+        // Verify archive was created
+        assert!(tar_path.exists(), "Archive file not created");
+        assert!(tar_path.metadata().expect("Failed to get metadata").len() > 0, "Archive file is empty");
+        
+        // Extract the archive
+        crypto.extract_tar_archive(&tar_path, &extract_dir).expect("Failed to extract tgz archive");
+        
+        // Verify extracted contents
+        // Check regular files
+        let extracted_file1 = extract_dir.join("file1.txt");
+        assert!(extracted_file1.exists(), "Extracted file1.txt not found");
+        let content1 = fs::read_to_string(extracted_file1).expect("Failed to read extracted file1");
+        assert_eq!(content1, "Test content 1", "Content mismatch for file1.txt");
+        
+        let extracted_bin = extract_dir.join("file2.bin");
+        assert!(extracted_bin.exists(), "Extracted file2.bin not found");
+        let bin_content = fs::read(extracted_bin).expect("Failed to read binary file");
+        assert_eq!(bin_content, vec![0x00, 0x01, 0x02, 0xFF], "Binary content mismatch");
+        
+        // Check nested files
+        let extracted_nested = extract_dir.join("subdir/file3.txt");
+        assert!(extracted_nested.exists(), "Extracted nested file not found");
+        let nested_content = fs::read_to_string(extracted_nested).expect("Failed to read nested file");
+        assert_eq!(nested_content, "Nested file content", "Content mismatch for nested file");
+        
+        // Check empty directory
+        let extracted_empty = extract_dir.join("empty_dir");
+        assert!(extracted_empty.exists(), "Empty directory not extracted");
+        assert!(extracted_empty.is_dir(), "Extracted empty_dir is not a directory");
+        assert!(extracted_empty.read_dir().expect("Failed to read empty directory").next().is_none(), "Extracted empty directory is not empty");
+        
+        // Clean up
+        temp_dir.close().expect("Failed to close temp directory");
     }
 
     #[test]
