@@ -18,7 +18,6 @@ use rand::Rng;
 use zxcvbn::zxcvbn;
 use zxcvbn::Score;
 use serde::{Serialize, Deserialize};
-use crate::GenArgs;
 use std::fmt;
 use clap::ValueEnum;
 
@@ -76,19 +75,20 @@ pub struct PasswordOptions {
     pub avoid_confusion: bool,
 }
 
-impl From<GenArgs> for PasswordOptions {
-    fn from(args: GenArgs) -> Self {
-        Self {
-            length: args.length,
-            include_uppercase: !args.no_uppercase,
-            include_lowercase: !args.no_lowercase,
-            include_numbers: !args.no_numbers,
-            include_special: !args.no_special,
-            url_safe: args.url_safe,
-            avoid_confusion: args.avoid_confusion,
-        }
-    }
-}
+// 移除From<GenArgs>实现
+// impl From<GenArgs> for PasswordOptions {
+//     fn from(args: GenArgs) -> Self {
+//         Self {
+//             length: args.length,
+//             include_uppercase: !args.no_uppercase,
+//             include_lowercase: !args.no_lowercase,
+//             include_numbers: !args.no_numbers,
+//             include_special: !args.no_special,
+//             url_safe: args.url_safe,
+//             avoid_confusion: args.avoid_confusion,
+//         }
+//     }
+// }
 impl  Default for PasswordOptions {
     fn default() -> Self {
         Self {

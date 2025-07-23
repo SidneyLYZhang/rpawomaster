@@ -37,3 +37,8 @@ tar = "0.4"       # 新增tar支持
 flate2 = "1.0"    # 新增tar.gz支持
 tempfile = "3.3"  # 新增临时文件支持
 bincode = { version = "2.0.1", features = ["serde"]}
+
+[dev-dependencies]
+walkdir = "2.4"
+tempfile = "3.8"
+rpawomaster = { path = ".", version = "0.1.0" }

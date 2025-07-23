@@ -11,14 +11,12 @@
 //
 // A secure password manager written in Rust.
 
+mod pwsmanager;
+mod passgen;
+mod securecrypto;
+
 use clap::{Parser, Args};
-// use rand::seq::SliceRandom;
 use rand::rngs::OsRng;
-// use zxcvbn::zxcvbn;
-// use std::collections::HashSet;
-// use rsa::RsaPrivateKey;
-// use rsa::pkcs8::{EncodePrivateKey, DecodePrivateKey};
-// use rsa::pkcs8::{EncodePublicKey, LineEnding};
 use aes_gcm::{Aes256Gcm, AeadInPlace, KeyInit, Nonce};
 use pbkdf2::pbkdf2;
 use sha2::Sha256;
@@ -34,16 +32,10 @@ use hex::encode;
 use rand::RngCore;
 use std::io::{self, Write};
 use chrono::Local;
-// use base64::Engine;
-// use base64::engine::general_purpose;
 
 use crate::passgen::Capitalization;
 use crate::securecrypto::SecureCrypto;
 use crate::pwsmanager::PasswordManager;
-
-mod pwsmanager;
-mod securecrypto;
-mod passgen;
 
 #[derive(Debug, Parser)]
 #[command(name = "rpawomaster")]

@@ -1182,6 +1182,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rpassword",
+ "rpawomaster",
  "rsa",
  "rusqlite",
  "serde",
