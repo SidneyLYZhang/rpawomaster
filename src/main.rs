@@ -1245,11 +1245,10 @@ fn search_passwords(text: String, user: Option<String>, vault: Option<String>) -
     // 解密密码 - 支持新旧格式兼容
     let encrypted_bytes = selected_entry.current_password.clone();
     let decrypted_password = crypto.decrypt_string(&IVec::from(encrypted_bytes.clone()))
-                                            .expect("Decryption failed");
+                                            .map_err(|e| format!("Decryption failed: {}", e))?;
 
     // 显示详细信息
     println!("\n--- Password Details ---");
-    println!("Name: {}", selected_entry.name);
     if let Some(username) = &selected_entry.username {
         println!("Username: {}", username);
     }
