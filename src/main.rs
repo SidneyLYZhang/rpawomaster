@@ -23,9 +23,11 @@ use sha2::Sha256;
 use hmac::Hmac;
 use serde::{Serialize, Deserialize};
 use serde_json;
+use std::env::temp_dir;
 use std::fs;
 use sled::IVec;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tempfile::tempdir;
 use dirs::config_dir;
 use rpassword::read_password;
 use hex::encode;
@@ -108,6 +110,20 @@ enum Cli {
     Crypt {
         #[command(subcommand)]
         subcommand: CryptSubcommand,
+    },
+
+    /// Export password vault
+    Export {
+        /// Export user data
+        user: String,
+        
+        /// Path to export file
+        #[arg(short, long)]
+        path: Option<String>,
+
+        /// Vault to export
+        #[arg(short, long)]
+        vault: Option<String>,
     },
 }
 
@@ -870,12 +886,7 @@ fn main() -> Result<(), String> {
                 let core_password = read_password_from_stdin("Enter core password: ")?;
 
                 // 加载配置文件
-                let config_dir = get_config_dir()?;
-                let config_file_path = config_dir.join(format!("{}.json", username));
-                let config_data = fs::read_to_string(&config_file_path)
-                    .map_err(|e| format!("Failed to read config file: {}", e))?;
-                let config: ConfigFile = serde_json::from_str(&config_data)
-                    .map_err(|e| format!("Failed to parse config: {}", e))?;
+                let config: ConfigFile = load_config(&username)?;
 
                 // 解密私钥
                 let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
@@ -890,6 +901,69 @@ fn main() -> Result<(), String> {
                 println!("Successfully decrypted '{}' to '{}'", source, target);
                 Ok(())
             }
+        },
+        Cli::Export { user, path , vault } => {
+            // 处理导出路径，默认为当前目录
+            let output_dir = match path {
+                Some(p) => p,
+                None => std::env::current_dir()
+                    .map(|dir| dir.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| ".".to_string()),
+            };
+
+            // 确认核心密码
+            let core_password = read_password_from_stdin("Enter core password: ")?;
+
+            // 获取用户配置
+            let config = load_config(&user)?;
+            let vaults = config.vaults.clone();
+            let select_vaults = if vault.is_some() {
+                let vault_name = vault.unwrap();
+                let vault = vaults.iter().find(|v| v.name == vault_name)
+                                            .ok_or_else(|| format!("未找到指定的Vault: {}", vault_name))?;
+                vec![vault.clone()]
+            } else {
+                vaults
+            };
+            
+            // 解密私钥
+            let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+            // 创建加密器
+            let crypto = SecureCrypto::from_pem_keys(&config.public_key, &private_key)
+                .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
+
+            // 确保导出目录存在
+            let export_dir = Path::new(&output_dir);
+            if !export_dir.exists() {
+                fs::create_dir_all(&export_dir)
+                    .map_err(|e| format!("创建导出目录失败: {}", e))?;
+            }
+
+            // 构建导出文件名
+            let export_filename = format!("{}.tgz", user);
+            let export_path = export_dir.join(export_filename);
+
+            // 创建临时文件夹，拷贝Vault文件
+            let temp_dir = tempdir().map_err(|e| format!("创建临时文件夹失败: {}", e))?;
+            let temp_path = temp_dir.path();
+            for vault in &select_vaults {
+                let src_path = Path::new(&vault.path);
+                crypto.encrypt_path(src_path, temp_path)
+                        .map_err(|e| format!("加密Vault文件失败: {}", e))?;
+            }
+            // 拷贝用户配置文件
+            let config_file_path = get_config_dir()?.join(format!("{}.json", user));
+            let dest_config_path = temp_path.join(format!("{}.json", user));
+            fs::copy(config_file_path, dest_config_path).map_err(|e| format!("复制配置文件失败: {}", e))?;
+
+            // 执行导出和打包
+            crypto.create_tar_archive(
+                temp_path,
+                &export_path,
+            ).map_err(|e| format!("创建加密归档失败: {}", e))?;
+
+            println!("成功导出用户 '{}' 的数据到: {}", user, export_path.display());
+            Ok(())
         },
     }
 }
@@ -1147,6 +1221,28 @@ fn prompt_input(prompt: &str) -> Result<String, String> {
     let mut input = String::new();
     io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
     Ok(input.trim().to_string())
+}
+
+fn import_passvaults(filepath: String, vaultspath:String) -> Result<()> {
+    // 创建中间解压目录
+    let temp_dir = tempdir().map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    let temp_path = temp_dir.path();
+    let mut crypto = SecureCrypto::new().map_err(|e| format!("Failed to create crypto: {}", e))?;
+
+    // 解压初始包
+    let file_path = Path::new(&filepath);
+    crypto.extract_tar_archive(file_path, temp_path)?;
+
+    // 导入用户配置文件
+    let username = file_path.file_stem().map(|s| s.to_string_lossy().to_string())?;
+    let config_path = get_config_dir()?;
+    let config_file_path = config_path.join(format!("{}.json", &username));
+    fs::copy(temp_path.join(format!("{}.json", &username)), config_file_path)?;
+
+    //加载用户配置
+    let config = load_config(&username)?;
+
+    Ok(())
 }
 
 fn search_passwords(text: String, user: Option<String>, vault: Option<String>) -> Result<(), String> {

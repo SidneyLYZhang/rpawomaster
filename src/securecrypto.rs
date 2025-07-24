@@ -46,6 +46,15 @@ pub struct SecureCrypto {
 }
 
 impl SecureCrypto {
+    pub fn new() -> Result<Self> {
+        let keys = generate_rsa_keypair().unwrap();
+        let private_key = RsaPrivateKey::from_pkcs8_pem(&keys.0).unwrap();
+        let public_key = RsaPublicKey::from_public_key_pem(&keys.1).unwrap();
+        Ok(Self {
+            private_key,
+            public_key,
+        })
+    }
     /// 从PEM格式字符串创建加密模块
     pub fn from_pem_keys(public_key_pem: &str, private_key_pem: &str) -> Result<Self> {
         let private_key = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
@@ -158,6 +167,93 @@ impl SecureCrypto {
         } else {
             Err(anyhow!("Invalid source path for decryption: must be a .esz file"))
         }
+    }
+
+    /// 创建 tar 归档文件
+    pub fn create_tar_archive(&self, source_dir: &Path, tar_path: &Path) -> Result<()> {
+        // 把 `src_dir` 整个目录打包成 `dst_file`。
+        // 如果 `dst_file` 以 `.gz` / `.tgz` 结尾，就自动用 gzip 压缩。
+        // 创建输出文件
+        let out_file = File::create(tar_path)?;
+
+        // 根据扩展名决定是否压缩
+        let extension = tar_path.extension().and_then(|e| e.to_str());
+        let use_gzip = matches!(extension, Some("gz") | Some("tgz"));
+
+        // 如果压缩就用 GzEncoder 包装，否则直接写裸 tar
+        let mut tar_builder = if use_gzip {
+            let enc = GzEncoder::new(out_file, Compression::default());
+            Builder::new(Box::new(enc) as Box<dyn Write>)
+        } else {
+            Builder::new(Box::new(out_file) as Box<dyn Write>)
+        };
+
+        // 遍历目录
+        for entry in WalkDir::new(source_dir) {
+            let entry = entry?;
+            let file_path = entry.path();
+            
+            // 跳过源目录本身
+            if file_path == source_dir {
+                continue;
+            }
+            
+            let relative_path = file_path.strip_prefix(source_dir)
+                .unwrap_or_else(|_| file_path.file_name().unwrap().as_ref());
+
+            if file_path.is_file() {
+                // 把单个文件追加进 tar
+                let mut file = File::open(file_path)?;
+                tar_builder.append_file(relative_path, &mut file)?;
+            } else if file_path.is_dir() {
+                // 空目录也需要显式追加，否则不会出现在归档里
+                // 只有当目录为空时才需要显式添加
+                let mut entries = fs::read_dir(file_path)?;
+                if entries.next().is_none() {
+                    tar_builder.append_dir(relative_path, file_path)?;
+                }
+            }
+        }
+
+        // Builder 会在 drop 时 flush , 手动 finish
+        tar_builder.finish()?;
+        Ok(())
+    }
+
+    /// 解压 tar 归档文件
+    pub fn extract_tar_archive(&self, tar_path: &Path, output_dir: &Path) -> Result<()> {
+        // 创建或清空输出目录
+        if !output_dir.exists() {
+            fs::create_dir_all(output_dir)?;
+        }
+
+        // 根据扩展名决定是否用 gzip 解码
+        let extension = tar_path.extension().and_then(|e| e.to_str());
+        let use_gzip = matches!(extension, Some("gz") | Some("tgz"));
+
+        let file = File::open(tar_path)?;
+        let mut archive = if use_gzip {
+            let dec = GzDecoder::new(file);
+            Archive::new(Box::new(dec) as Box<dyn Read>)
+        } else {
+            Archive::new(Box::new(file) as Box<dyn Read>)
+        };
+
+        // 手动解包每个条目以避免Windows权限问题
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+            let full_path = output_dir.join(path);
+            
+            // 确保父目录存在
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            
+            // 解包文件
+            entry.unpack(&full_path)?;
+        }
+        Ok(())
     }
 
     // --- 私有方法 ---
@@ -362,91 +458,6 @@ impl SecureCrypto {
         
         // 临时目录自动删除
         temp_dir.close()?;
-        Ok(())
-    }
-
-    pub fn create_tar_archive(&self, source_dir: &Path, tar_path: &Path) -> Result<()> {
-        // 把 `src_dir` 整个目录打包成 `dst_file`。
-        // 如果 `dst_file` 以 `.gz` / `.tgz` 结尾，就自动用 gzip 压缩。
-        // 创建输出文件
-        let out_file = File::create(tar_path)?;
-
-        // 根据扩展名决定是否压缩
-        let extension = tar_path.extension().and_then(|e| e.to_str());
-        let use_gzip = matches!(extension, Some("gz") | Some("tgz"));
-
-        // 如果压缩就用 GzEncoder 包装，否则直接写裸 tar
-        let mut tar_builder = if use_gzip {
-            let enc = GzEncoder::new(out_file, Compression::default());
-            Builder::new(Box::new(enc) as Box<dyn Write>)
-        } else {
-            Builder::new(Box::new(out_file) as Box<dyn Write>)
-        };
-
-        // 遍历目录
-        for entry in WalkDir::new(source_dir) {
-            let entry = entry?;
-            let file_path = entry.path();
-            
-            // 跳过源目录本身
-            if file_path == source_dir {
-                continue;
-            }
-            
-            let relative_path = file_path.strip_prefix(source_dir)
-                .unwrap_or_else(|_| file_path.file_name().unwrap().as_ref());
-
-            if file_path.is_file() {
-                // 把单个文件追加进 tar
-                let mut file = File::open(file_path)?;
-                tar_builder.append_file(relative_path, &mut file)?;
-            } else if file_path.is_dir() {
-                // 空目录也需要显式追加，否则不会出现在归档里
-                // 只有当目录为空时才需要显式添加
-                let mut entries = fs::read_dir(file_path)?;
-                if entries.next().is_none() {
-                    tar_builder.append_dir(relative_path, file_path)?;
-                }
-            }
-        }
-
-        // Builder 会在 drop 时 flush , 手动 finish
-        tar_builder.finish()?;
-        Ok(())
-    }
-
-    pub fn extract_tar_archive(&self, tar_path: &Path, output_dir: &Path) -> Result<()> {
-        // 创建或清空输出目录
-        if !output_dir.exists() {
-            fs::create_dir_all(output_dir)?;
-        }
-
-        // 根据扩展名决定是否用 gzip 解码
-        let extension = tar_path.extension().and_then(|e| e.to_str());
-        let use_gzip = matches!(extension, Some("gz") | Some("tgz"));
-
-        let file = File::open(tar_path)?;
-        let mut archive = if use_gzip {
-            let dec = GzDecoder::new(file);
-            Archive::new(Box::new(dec) as Box<dyn Read>)
-        } else {
-            Archive::new(Box::new(file) as Box<dyn Read>)
-        };
-
-        // 手动解包每个条目以避免Windows权限问题
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?;
-            let full_path = output_dir.join(path);
-            
-            // 确保父目录存在
-            if let Some(parent) = full_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            
-            // 解包文件
-            entry.unpack(&full_path)?;
-        }
         Ok(())
     }
 }
