@@ -299,3 +299,21 @@ pub fn decrypt_private_key(encrypted_private_key: &str, core_password: &str) -> 
     String::from_utf8(decrypted_data)
         .map_err(|e| format!("Invalid UTF-8 in decrypted private key: {}", e))
 }
+
+/// 获取用户名，如果提供了user参数则直接使用，否则提示用户输入
+pub fn get_username(user: Option<String>) -> Result<String, String> {
+    match user {
+        Some(u) => Ok(u),
+        None => {
+            print!("Enter username: ");
+            io::stdout().flush().map_err(|e| e.to_string())?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+            let input = input.trim();
+            if input.is_empty() {
+                return Err("Username cannot be empty".to_string());
+            }
+            Ok(input.to_string())
+        }
+    }
+}
