@@ -66,7 +66,16 @@ enum Cli {
     Update,
 
     /// Delete an existing password
-    Delete,
+    Delete {
+        /// Password name to delete
+        passwordname: String,
+
+        /// User to delete password from
+        user: Option<String>,
+        
+        /// Vault to delete password from
+        vault: Option<String>,
+    },
 
     /// list all existing passwords
     List {
@@ -506,8 +515,9 @@ fn main() -> Result<(), String> {
             println!("Password update feature is under development.");
             Ok(())
         },
-        Cli::Delete => {
+        Cli::Delete { passwordname, user, vault } => {
             println!("Password delete feature is under development.");
+            println!("delete {} in {:?} at {:?}", passwordname, user, vault);
             Ok(())
         },
         Cli::List { user, vault } => {
