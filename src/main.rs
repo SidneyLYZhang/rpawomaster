@@ -71,9 +71,11 @@ enum Cli {
         passwordname: String,
 
         /// User to delete password from
+        #[arg(short, long)]
         user: Option<String>,
         
         /// Vault to delete password from
+        #[arg(short, long)]
         vault: Option<String>,
     },
 
@@ -516,8 +518,17 @@ fn main() -> Result<(), String> {
             Ok(())
         },
         Cli::Delete { passwordname, user, vault } => {
+            // 获取用户名
+            let username = get_username(user)?;
+
+            // 加载用户配置
+            let config = load_user_config(&username)?;
+
+            // 处理密码库选择
+            let vault = select_vault(&config, vault)?;
+
             println!("Password delete feature is under development.");
-            println!("delete {} in {:?} at {:?}", passwordname, user, vault);
+            println!("delete {} in {:?} at {:?}", passwordname, username, vault.name);
             Ok(())
         },
         Cli::List { user, vault } => {

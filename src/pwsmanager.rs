@@ -61,6 +61,7 @@ pub struct PasswordEntry {
     pub note: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub deleted: bool,
 }
 
 // 索引类型枚举
@@ -121,6 +122,7 @@ impl PasswordManager {
             note: note.clone(),
             created_at: now,
             updated_at: now,
+            deleted: false,
         };
 
         // 序列化数据
@@ -148,16 +150,16 @@ impl PasswordManager {
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
         
         if let Some(entry) = passwords_tree.get(id.as_bytes())? {
-            let entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
+            let mut entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
             
-            // 删除主记录
-            passwords_tree.remove(id.as_bytes())?;
+            // 标记为已删除
+            entry.deleted = true;
             
-            // 删除索引
-            self.remove_index(IndexType::Name, &entry.name, id)?;
-            if let Some(note) = &entry.note {
-                self.remove_index(IndexType::Note, note, id)?;
-            }
+            // 保存更新
+            let mut buffer = vec![0u8; 1024]; // 初始化一个足够大的缓冲区
+            encode_into_slice(&entry, &mut buffer, standard())?;
+            let serialized = &buffer[..];
+            passwords_tree.insert(id.as_bytes(), serialized)?;
         }
         
         Ok(())
@@ -232,7 +234,10 @@ impl PasswordManager {
             });
             
             if name_match || note_match {
-                results.push(entry);
+                // 过滤掉已删除的条目
+                if !entry.deleted {
+                    results.push(entry);
+                }
             }
         }
         
@@ -247,7 +252,10 @@ impl PasswordManager {
         for record in passwords_tree.iter() {
             let (_, value) = record?;
             let entry: PasswordEntry = decode_from_slice(&value, standard())?.0;
-            entries.push(entry);
+            // 过滤掉已删除的条目
+            if !entry.deleted {
+                entries.push(entry);
+            }
         }
         
         Ok(entries)
