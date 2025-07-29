@@ -38,13 +38,12 @@ pub struct VaultMetadata {
 }
 
 impl VaultMetadata {
-    pub fn new(name: &str, path: &str) -> Self {
-        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    pub fn from_vault(vault: &Vault) -> Self {
         Self {
-            name: name.to_string(),
-            path: path.to_string(),
-            created_at: now.clone(),
-            last_modified: now.clone(),
+            name: vault.name.clone(),
+            path: vault.path.clone(),
+            created_at: vault.created_at.clone(),
+            last_modified: vault.last_modified.clone(),
         }
     }
     pub fn save_vaultmetadata(&self) -> Result<(), ConfigError> {
@@ -80,6 +79,10 @@ impl Vault {
             created_at: timenow.clone(),
             last_modified: timenow.clone(),
         }
+    }
+    pub fn set_default(&mut self, is_default: bool) {
+        self.is_default = is_default;
+        self.last_modified = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     }
 }
 
@@ -125,11 +128,6 @@ impl ConfigFile {
         self.vaults.push(vault);
         self.save_config().unwrap();
     }
-    pub fn update_config(&mut self, username: &str, encrypted_private_key: &str, public_key: &str) {
-        self.username = username.to_string();
-        self.encrypted_private_key = encrypted_private_key.to_string();
-        self.public_key = public_key.to_string();
-    }
     pub fn save_config(&self) -> Result<(), ConfigError> {
         let config_dir = get_config_dir().map_err(ConfigError::ConfigDirError)?;
         let config_file_path = config_dir.join(format!("{}.json", self.username));
@@ -146,11 +144,12 @@ impl ConfigFile {
         let private_key = decrypt_private_key(&key, password)?;
         Ok(private_key)
     }
-    pub fn check_corepassword_valid(&mut self, password: &str) -> Result<(), String> {
+    pub fn check_corepassword_valid(&mut self, password: &str) -> Result<String, String> {
         let now = Utc::now();
         let daygap = now.signed_duration_since(self.core_password_update_time).num_days();
-        if daygap >= 90 { // core password 强制90天有效
+        let new_password = if daygap >= 90 { // core password 强制90天有效
             loop {
+                println!("⚠️ Core password has expired.");
                 let new_core_password = read_password_from_stdin("Enter new core password: ")?;
                 let confirm = read_password_from_stdin("Confirm new core password: ")?;
                 if new_core_password != confirm {
@@ -167,10 +166,12 @@ impl ConfigFile {
                 self.encrypted_private_key = encrypt_private_key(&private_key,&new_core_password)?;
                 self.core_password_update_time = now;
                 self.save_config().unwrap();
-                break;
+                break new_core_password;
             }
-        }
-        Ok(())
+        } else {
+            password.to_string()
+        };
+        Ok(new_password)
     }
 }
 
@@ -188,6 +189,14 @@ pub fn read_password_from_stdin(prompt: &str) -> Result<String, String> {
     print!("{}", prompt);
     io::stdout().flush().map_err(|e| format!("Failed to flush output: {}", e))?;
     read_password().map_err(|e| format!("Failed to read password: {}", e))
+}
+
+/// 提示用户输入核心密码，并核心密码验证
+pub fn prompt_core_password(user: String) -> Result<String, String> {
+    let mut core_password = read_password_from_stdin("Enter core password: ")?;
+    let mut config = load_user_config(&user)?;
+    core_password = config.check_corepassword_valid(&core_password)?;
+    Ok(core_password)
 }
 
 /// 获取配置目录
@@ -314,6 +323,40 @@ pub fn get_username(user: Option<String>) -> Result<String, String> {
                 return Err("Username cannot be empty".to_string());
             }
             Ok(input.to_string())
+        }
+    }
+}
+
+/// 加载用户配置
+pub fn load_user_config(username: &str) -> Result<ConfigFile, String> {
+    let config_dir = get_config_dir()?;
+    let config_file_path = config_dir.join(format!("{}.json", username));
+    if !config_file_path.exists() {
+        return Err(format!("No configuration found for user '{}'", username));
+    }
+    let config_data = fs::read_to_string(&config_file_path)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    let config: ConfigFile = serde_json::from_str(&config_data)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    Ok(config)
+}
+
+// 选取密码库
+pub fn select_vault(config: &ConfigFile, vault_arg: Option<String>) -> Result<Vault, String> {
+    match vault_arg {
+        Some(vault_name) => {
+            let existing_vaults: Vec<_> = config.vaults.iter().map(|v| &v.name).collect();
+            config.vaults.iter()
+                .find(|v| v.name == vault_name)
+                .cloned()
+                .ok_or(format!("Vault '{}' not found. Existing vaults: {:?}", vault_name, existing_vaults))
+        },
+        None => {
+            // Find default vault
+            config.vaults.iter()
+                .find(|v| v.is_default)
+                .cloned()
+                .ok_or("No default vault found. Please specify a vault or set a default.".to_string())
         }
     }
 }

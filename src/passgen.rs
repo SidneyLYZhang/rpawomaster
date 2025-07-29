@@ -282,7 +282,7 @@ pub fn assess_password_strength(password: &str) -> Result<(String, u8, String), 
 pub fn evaluate_and_display_password_strength(password: &str) -> Result<(), String> {
     let (rating, score, feedback) = assess_password_strength(password)
         .map_err(|e| format!("Failed to assess password strength: {}", e))?;
-    println!("密码安全等级: {} (评分: {})", rating, score);
+    println!("密码安全等级: {} (评分: {}/4)", rating, score);
     if score < 2 {
         eprintln!("⚠️ 警告: 密码安全等级较低 - {}", feedback);
     }
