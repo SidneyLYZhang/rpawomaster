@@ -13,7 +13,16 @@
 
 ## 概述
 
-刚刚开始使用Rust写的密码管理器，目前还只有少数功能可用，后续功能还在开发中。
+使用Rust写的密码管理器，目前可用功能有：
+
+1. 密码库初始化（含密码库导入）
+2. 密码生成
+3. 密码强度检验
+4. 增加密码
+5. 查找密码
+6. 导出密码库
+7. 列出密码/密码库
+8. 简单的加密/解密功能
 
 ## 密码安全吗？
 
@@ -63,7 +72,28 @@ cargo build --release
 cargo run -- [参数]
 
 # 查看帮助
-cargo run -- --help
+$ cargo run -- --help
+
+A secure password manager written in Rust
+
+Usage: rpawomaster.exe <COMMAND>
+
+Commands:
+  init      Initialize a new password vault
+  gen       Generate a new password
+  add       Add a password to the vault
+  update    Update an existing password
+  delete    Delete an existing password
+  list      list all existing passwords
+  search    Search passwords in the vault
+  testpass  Test password strength and properties
+  vaults    List all password vaults
+  crypt     Encrypt or decrypt files/directories
+  export    Export password vault
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
 ```
 
 使用的第一步：
@@ -80,18 +110,19 @@ cargo run -- init
 | 命令行参数解析 | :heavy_check_mark: 已完成 | 2025-06-30 |
 | 密码创建 | :heavy_check_mark: 已完成 | 2025-06-30 |
 | 密码强度检验 | :heavy_check_mark: 已完成 | 2025-06-30 |
-| 密码库初始化 | :soon: 进行中 |  |
-| 增加密码 | :soon: 进行中 |  |
+| 密码库初始化 | :heavy_check_mark: 已完成 | 2025-07-29 |
+| 增加密码 | :heavy_check_mark: 已完成 | 2025-07-29 |
 | 支持保存[动态令牌（TOTP/HOTP）](https://2fasolution.com/index.html) | 📋 未开始 |  |
 | 更新密码 | :bookmark_tabs: 未开始 |  |
-| 查找密码 | :bookmark_tabs: 未开始 |  |
-| 单元测试 | :bookmark_tabs: 未开始 |  |
+| 查找密码 | :heavy_check_mark: 已完成 | 2025-07-29 |
+| 单元测试 | :heavy_check_mark: 已完成 | 2025-07-29 |
 | 文档完善 | :bookmark_tabs: 未开始 |  |
 | 发布v1.0版本 | :bookmark_tabs: 未开始 |  |
 
-目前，密码库初始化部分已经初步完成了，但是迁移部分（通过文件导入密码库）还是毛坯房，可能要在导出功能完善后再继续开发。
+目前，密码库基本功能已经大体完成，目前还在修改部分功能的实现方案。目前密码查询可能还存在一些问题。
+如果你在使用时遇到了其他问题，欢迎提出issue。
 
-现在在做部分功能的重构，希望增加一个便于记忆的密码生成功能，并把TOTP补上。
+TOTP/HOTP，目前还没开始，还有一些保存与输出的逻辑有待解决。
 
 ## 贡献指南
 1. Fork本仓库

@@ -1,6 +1,6 @@
 [package]
 name = "rpawomaster"
-version = "0.1.0"
+version = "0.1.6"
 edition = "2024"
 build = "build.rs"  # 使用构建脚本
 
@@ -42,4 +42,4 @@ arboard = "3.6.0"
 [dev-dependencies]
 walkdir = "2.4"
 tempfile = "3.8"
-rpawomaster = { path = ".", version = "0.1.0" }
+rpawomaster = { path = ".", version = "0.1.6" }
