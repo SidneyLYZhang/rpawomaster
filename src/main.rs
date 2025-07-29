@@ -18,7 +18,6 @@ mod configtool;
 
 use clap::{Parser, Args};
 use serde::{Serialize, Deserialize};
-use serde_json;
 use std::fs;
 use sled::IVec;
 use std::path::{Path, PathBuf};
@@ -916,6 +915,11 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
         policy,
         note.ok(),
     ).map_err(|e| format!("Failed to add password: {}", e))?;
+
+    {
+        let mut vault_meta = VaultMetadata::get_vaultmetadata(&vault.path).unwrap();
+        vault_meta.vault_updated();
+    }
 
     println!("Password added with ID: {}", id);
     Ok(())

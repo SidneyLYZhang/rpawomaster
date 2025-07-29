@@ -38,6 +38,14 @@ pub struct VaultMetadata {
 }
 
 impl VaultMetadata {
+    pub fn get_vaultmetadata(vaultpath: &str) -> Result<Self, ConfigError> {
+        let metadata_path = Path::new(vaultpath).join("metadata.json");
+        let metadata_file = fs::File::open(&metadata_path)
+            .map_err(|e| format!("Failed to open metadata file: {}", e)).unwrap();
+        let metadata: Self = serde_json::from_reader(metadata_file)
+            .map_err(|e| format!("Failed to read metadata file: {}", e)).unwrap();
+        Ok(metadata)
+    }
     pub fn from_vault(vault: &Vault) -> Self {
         Self {
             name: vault.name.clone(),
