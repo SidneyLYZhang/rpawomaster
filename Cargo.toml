@@ -6,7 +6,7 @@ authors = ["Sidney Zhang <zly@lyzhang.me>"]
 description = "A secure password manager written in Rust"
 license = "MulanPSL-2.0"
 repository = "https://github.com/SidneyLYZhang/rpawomaster"
-keywords = ["cli", "tool", "password manager"]
+keywords = ["cli", "tool", "passwords_manager"]
 categories = ["command-line-utilities"]
 
 build = "build.rs"
