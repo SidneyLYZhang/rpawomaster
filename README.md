@@ -52,7 +52,9 @@
 
 ## 安装指南
 
-目前仅提供源码安装方式。
+可使用源码安装，或使用`Cargo`安装。
+
+源码安装方式：
 
 ```bash
 # 克隆仓库
@@ -63,16 +65,19 @@ cd rpawomaster
 cargo build --release
 ```
 
+Cargo安装：
+
+```bash
+cargo install rpawomaster
+```
+
 ## 使用方法
 
 因为目前只完成了部分功能，以下使用方式仅作测试参考使用。
 
 ```bash
-# 运行程序
-cargo run -- [参数]
-
 # 查看帮助
-$ cargo run -- --help
+$ rpawomaster --help
 
 A secure password manager written in Rust
 
@@ -100,7 +105,7 @@ Options:
 
 ```bash
 # 密码库的使用，第一步就是初始化密码库
-cargo run -- init
+rpawomaster init
 ```
 
 ## 工程进度
