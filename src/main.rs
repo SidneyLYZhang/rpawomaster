@@ -17,7 +17,6 @@ mod securecrypto;
 mod configtool;
 
 use clap::{Parser, Args};
-use rpawomaster::configtool::input_password;
 use serde::{Serialize, Deserialize};
 use std::fs;
 use sled::IVec;
@@ -537,12 +536,12 @@ fn main() -> Result<(), String> {
             let need_all = all.unwrap_or(false);
             // 获取用户名
             let username = get_username(user)?;
-            // 加载配置
-            let config = load_user_config(&username)?;
-            // 选定密码库
-            let vault = select_vault(&config, vault)?;
             // 输入并确认核心密码
             let core_password = prompt_core_password(username.clone())?;
+            // 加载配置
+            let mut config = load_user_config(&username)?;
+            // 选定密码库
+            let mut vault = select_vault(&config, vault)?;
             // 加载私钥
             let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
             // 创建加密对象
@@ -561,7 +560,7 @@ fn main() -> Result<(), String> {
                         Some(policy) => generate_from_policy(&policy)?,
                         None => {
                             println!("Password {} has no policy. Please input new password.", entry.name);
-                            input_password()?
+                            input_password_check()?
                         },
                     };
                     let encrypted_password = crypto.encrypt_string(&new_password)
@@ -584,7 +583,7 @@ fn main() -> Result<(), String> {
                                     .map_err(|e| format!("Failed to get password {}: {}", pwname, e))?;
                 let new_password = match entry[0].policy.clone() {
                     Some(policy) => generate_from_policy(&policy)?,
-                    None => input_password()?,
+                    None => input_password_check()?,
                 };
                 let encrypted_password = crypto.encrypt_string(&new_password)
                                                         .map_err(|e| format!("Failed to encrypt password: {}", e))?;
@@ -592,26 +591,30 @@ fn main() -> Result<(), String> {
                     .map_err(|e| format!("Failed to update password: {}", e))?;
                 println!("Password {} updated successfully.", pwname);
             }
+            vault.update_vault();
+            config.update_vault(vault);
             Ok(())
         },
         Cli::Delete { passwordname, user, vault } => {
             // 获取用户名
             let username = get_username(user)?;
 
-            // 加载用户配置
-            let config = load_user_config(&username)?;
-
-            // 处理密码库选择
-            let vault = select_vault(&config, vault)?;
-
             // 输入核心密码
             let _ = prompt_core_password(username.clone())?;
+
+            // 加载用户配置
+            let mut config = load_user_config(&username)?;
+
+            // 处理密码库选择
+            let mut vault = select_vault(&config, vault)?;
 
             let pm = pwsmanager::PasswordManager::new(&vault.path)
                                             .map_err(|e| format!("Failed to initialize password manager: {}", e))?;
             pm.delete_password(None, Some(passwordname.clone()))
                 .map_err(|e| format!("Failed to delete password: {}", e))?;
-
+            
+            vault.update_vault();
+            config.update_vault(vault);
             println!("Password {} deleted successfully.", passwordname);
             Ok(())
         },
@@ -984,7 +987,7 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                 };
             },
             "m" | "manual" => {
-                let password = input_password()?;
+                let password = input_password_check()?;
                 let expiration_days_input = prompt_input("Enter password expiration days (0 for no expiration, default 0): ")?;
                 let expiration_days = if expiration_days_input.trim().is_empty() {
                     0

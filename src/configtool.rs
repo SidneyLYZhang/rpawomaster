@@ -92,6 +92,11 @@ impl Vault {
         self.is_default = is_default;
         self.last_modified = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     }
+    pub fn update_vault(&mut self) {
+        let mut metadata = VaultMetadata::from_vault(self);
+        metadata.vault_updated();
+        self.last_modified = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    }
 }
 
 #[derive(Debug)]
@@ -134,6 +139,15 @@ impl ConfigFile {
     }
     pub fn add_vault(&mut self, vault: Vault) {
         self.vaults.push(vault);
+        self.save_config().unwrap();
+    }
+    pub fn update_vault(&mut self, vault: Vault) {
+        for v in &mut self.vaults {
+            if v.path == vault.path {
+                *v = vault;
+                break;
+            }
+        }
         self.save_config().unwrap();
     }
     pub fn save_config(&self) -> Result<(), ConfigError> {
@@ -370,7 +384,7 @@ pub fn select_vault(config: &ConfigFile, vault_arg: Option<String>) -> Result<Va
 }
 
 // 输入密码并完成一般密码的确认
-pub fn input_password() -> Result<String, String> {
+pub fn input_password_check() -> Result<String, String> {
     loop {
         let password = read_password_from_stdin("Enter new password: ")?;
         let confirm = read_password_from_stdin("Confirm new password: ")?;
@@ -385,7 +399,7 @@ pub fn input_password() -> Result<String, String> {
             if retry.trim().is_empty() {
                 continue;
             } else {
-                if retry.trim().to_lowercase() != "y" {
+                if retry.trim().to_lowercase() != "n" {
                     continue;
                 } else {
                     println!("⭐ 密码安全等级: {} ({}/4)", rating, score);
