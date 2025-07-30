@@ -21,6 +21,8 @@ use serde::{Serialize, Deserialize};
 use std::fmt;
 use clap::ValueEnum;
 
+use crate::pwsmanager::PasswordPolicy;
+
 // 引入编译生成的单词列表
 include!(concat!(env!("OUT_DIR"), "/word_data.rs"));
 
@@ -75,20 +77,6 @@ pub struct PasswordOptions {
     pub avoid_confusion: bool,
 }
 
-// 移除From<GenArgs>实现
-// impl From<GenArgs> for PasswordOptions {
-//     fn from(args: GenArgs) -> Self {
-//         Self {
-//             length: args.length,
-//             include_uppercase: !args.no_uppercase,
-//             include_lowercase: !args.no_lowercase,
-//             include_numbers: !args.no_numbers,
-//             include_special: !args.no_special,
-//             url_safe: args.url_safe,
-//             avoid_confusion: args.avoid_confusion,
-//         }
-//     }
-// }
 impl  Default for PasswordOptions {
     fn default() -> Self {
         Self {
@@ -287,4 +275,43 @@ pub fn evaluate_and_display_password_strength(password: &str) -> Result<(), Stri
         eprintln!("⚠️ 警告: 密码安全等级较低 - {}", feedback);
     }
     Ok(())
+}
+
+// 从密码策略生成密码
+pub fn generate_from_policy(policy: &PasswordPolicy) -> Result<String, String> {
+    match policy {
+        PasswordPolicy::Random { 
+            length, 
+            include_uppercase, 
+            include_lowercase, 
+            include_numbers, 
+            include_special, 
+            url_safe, 
+            avoid_confusion } => {
+            let options = PasswordOptions {
+                length: *length,
+                include_uppercase: *include_uppercase,
+                include_lowercase: *include_lowercase,
+                include_numbers: *include_numbers,
+                include_special: *include_special,
+                url_safe: *url_safe,
+                avoid_confusion: *avoid_confusion,
+            };
+            generate_password(&options)
+        },
+        PasswordPolicy::Memorable { 
+            words, 
+            separator, 
+            include_numbers, 
+            capitalization 
+        } => {
+            let options = MemorablePasswordOptions {
+                word_count: *words as usize,
+                separator: *separator,
+                include_numbers: *include_numbers,
+                capitalization: capitalization.clone(),
+            };
+            generate_memorable_password(&options)
+        }
+    }
 }

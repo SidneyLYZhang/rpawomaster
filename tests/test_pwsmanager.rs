@@ -117,19 +117,13 @@ fn test_update_password() {
     assert_eq!(entries[0].histories.len(), 1);
 
     // 更新密码（提供新密码）
-    manager.update_password(id, Some(new_password.clone())).unwrap();
+    manager.update_password(id, new_password.clone()).unwrap();
 
     // 验证更新结果
     let entries = manager.list_passwords().unwrap();
     assert_eq!(entries[0].current_password, new_password);
     assert_eq!(entries[0].histories.len(), 2);
     assert_eq!(entries[0].histories[0].password, initial_password);
-
-    // 使用策略生成新密码
-    manager.update_password(id, None).unwrap();
-    let entries = manager.list_passwords().unwrap();
-    assert_ne!(entries[0].current_password, new_password); // 应该不同
-    assert_eq!(entries[0].histories.len(), 3);
 }
 
 #[test]
@@ -152,14 +146,14 @@ fn test_delete_password() {
     assert_eq!(manager.list_passwords().unwrap().len(), 1);
 
     // 删除密码
-    manager.delete_password(id).unwrap();
+    manager.delete_password(Some(id), None).unwrap();
 
     // 验证删除成功
     assert_eq!(manager.list_passwords().unwrap().len(), 0);
 
     // 尝试删除不存在的ID（应该不报错）
     let non_existent_id = Uuid::new_v4();
-    assert!(manager.delete_password(non_existent_id).is_ok());
+    assert!(manager.delete_password(Some(non_existent_id), None).is_ok());
 }
 
 #[test]
@@ -181,8 +175,8 @@ fn test_password_history() {
     ).unwrap();
 
     // 多次更新密码
-    manager.update_password(id, Some(password2.clone())).unwrap();
-    manager.update_password(id, Some(password3.clone())).unwrap();
+    manager.update_password(id, password2.clone()).unwrap();
+    manager.update_password(id, password3.clone()).unwrap();
 
     // 验证历史记录
     let entries = manager.list_passwords().unwrap();

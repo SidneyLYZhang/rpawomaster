@@ -24,7 +24,10 @@ use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 use std::io::{self, Write};
 
-use crate::passgen::{Capitalization, evaluate_and_display_password_strength};
+use crate::passgen::{
+    Capitalization, 
+    evaluate_and_display_password_strength, 
+    generate_from_policy};
 use crate::securecrypto::SecureCrypto;
 use crate::pwsmanager::PasswordManager;
 use crate::configtool::*;
@@ -63,7 +66,23 @@ enum Cli {
     },
 
     /// Update an existing password
-    Update,
+    Update {
+        // Update all entries
+        #[arg(short, long)]
+        all: Option<bool>,
+
+        /// Password name to update
+        #[arg(short, long)]
+        passwordname: Option<String>,
+
+        /// User to update password for
+        #[arg(short, long)]
+        user: Option<String>,
+
+        /// Vault to update password in 
+        #[arg(short, long)]
+        vault: Option<String>,
+    },
 
     /// Delete an existing password
     Delete {
@@ -513,8 +532,65 @@ fn main() -> Result<(), String> {
         Cli::Add { user, vault } => {
             add_password_interactive(user, vault)
         },
-        Cli::Update => {
-            println!("Password update feature is under development.");
+        Cli::Update { all, passwordname, user, vault } => {
+            let need_all = all.unwrap_or(false);
+            // 获取用户名
+            let username = get_username(user)?;
+            // 加载配置
+            let config = load_user_config(&username)?;
+            // 选定密码库
+            let vault = select_vault(&config, vault)?;
+            // 输入并确认核心密码
+            let core_password = prompt_core_password(username.clone())?;
+            // 加载私钥
+            let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+            // 创建加密对象
+            let crypto = SecureCrypto::from_pem_keys(&config.public_key, &private_key)
+                                                    .map_err(|e| format!("Failed to create crypto object: {}", e))?;
+            // 加载密码库
+            let pm = pwsmanager::PasswordManager::new(&vault.path)
+                                            .map_err(|e| format!("Failed to initialize password manager: {}", e))?;
+            // 更新密码
+            if need_all {
+                // 更新所有过期密码
+                let entries = pm.get_password(None, Some(true))
+                                    .map_err(|e| format!("Failed to get password: {}", e))?;
+                for entry in entries.clone() {
+                    let new_password = match entry.policy.clone() {
+                        Some(policy) => generate_from_policy(&policy)?,
+                        None => {
+                            println!("Password {} has no policy. Please input new password.", entry.name);
+                            input_password()?
+                        },
+                    };
+                    let encrypted_password = crypto.encrypt_string(&new_password)
+                                                            .map_err(|e| format!("Failed to encrypt password: {}", e))?;
+                    pm.update_password(entry.id, encrypted_password)
+                        .map_err(|e| format!("Failed to update password: {}", e))?;
+                }
+                println!("All expired passwords ({} in total) updated successfully.", entries.len());
+            } else {
+                // 确认需要更新的密码
+                let pwname = match passwordname {
+                    Some(name) => name,
+                    None => prompt_input("Enter password name to update: ")?,
+                };
+                // 获取密码ID
+                let id = pm.get_uuid(pwname.as_ref())
+                                    .map_err(|e| format!("Failed to find password {}: {}", pwname, e))?;
+                // 获取密码数据
+                let entry = pm.get_password(Some(id), Some(false))
+                                    .map_err(|e| format!("Failed to get password {}: {}", pwname, e))?;
+                let new_password = match entry[0].policy.clone() {
+                    Some(policy) => generate_from_policy(&policy)?,
+                    None => input_password()?,
+                };
+                let encrypted_password = crypto.encrypt_string(&new_password)
+                                                        .map_err(|e| format!("Failed to encrypt password: {}", e))?;
+                pm.update_password(id, encrypted_password)
+                    .map_err(|e| format!("Failed to update password: {}", e))?;
+                println!("Password {} updated successfully.", pwname);
+            }
             Ok(())
         },
         Cli::Delete { passwordname, user, vault } => {
@@ -527,8 +603,15 @@ fn main() -> Result<(), String> {
             // 处理密码库选择
             let vault = select_vault(&config, vault)?;
 
-            println!("Password delete feature is under development.");
-            println!("delete {} in {:?} at {:?}", passwordname, username, vault.name);
+            // 输入核心密码
+            let _ = prompt_core_password(username.clone())?;
+
+            let pm = pwsmanager::PasswordManager::new(&vault.path)
+                                            .map_err(|e| format!("Failed to initialize password manager: {}", e))?;
+            pm.delete_password(None, Some(passwordname.clone()))
+                .map_err(|e| format!("Failed to delete password: {}", e))?;
+
+            println!("Password {} deleted successfully.", passwordname);
             Ok(())
         },
         Cli::List { user, vault } => {

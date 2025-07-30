@@ -18,7 +18,6 @@ use serde::{Serialize, Deserialize};
 use bincode::serde::{encode_into_slice, decode_from_slice};
 use bincode::config::standard;
 use crate::passgen::Capitalization;
-use crate::passgen::{generate_password, generate_memorable_password, PasswordOptions, MemorablePasswordOptions};
 
 // 密码生成策略配置
 #[derive(Serialize, Deserialize, Clone, Debug, bincode::Encode, bincode::Decode)]
@@ -62,6 +61,24 @@ pub struct PasswordEntry {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted: bool,
+}
+
+impl PasswordEntry {
+    pub fn need_update(&self) -> bool {
+        if self.deleted {
+            return false;
+        } else if self.expires_at.is_some() {
+            let now = Utc::now();
+            let expires_at = self.expires_at.unwrap();
+            if now > expires_at {
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
 }
 
 // 索引类型枚举
@@ -146,8 +163,17 @@ impl PasswordManager {
     }
 
     /// 删除密码条目
-    pub fn delete_password(&self, id: Uuid) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn delete_password(
+        &self, 
+        id: Option<Uuid>, 
+        name: Option<String>
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
+
+        let id = match id {
+            Some(id) => id,
+            None => self.get_uuid(name.as_ref().unwrap())?,
+        };
         
         if let Some(entry) = passwords_tree.get(id.as_bytes())? {
             let mut entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
@@ -165,25 +191,46 @@ impl PasswordManager {
         Ok(())
     }
 
+    /// 获取密码数据
+    pub fn get_password(
+        &self,
+        id: Option<Uuid>,
+        expired: Option<bool>,
+    ) -> Result<Vec<PasswordEntry>, Box<dyn std::error::Error>> {
+        let expired = expired.unwrap_or(false);
+        let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
+        if expired {
+            let mut entries = Vec::new();
+            for record in passwords_tree.iter() {
+                let (_, value) = record?;
+                let entry: PasswordEntry = bincode::serde::decode_from_slice(&value, standard())?.0;
+                if entry.need_update() {
+                    entries.push(entry);
+                }
+            }
+            Ok(entries)
+        } else {
+            let id = id.ok_or("Password Id must be specified")?;
+            if let Some(entry) = passwords_tree.get(id.as_bytes())? {
+                let entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
+                Ok(vec![entry])
+            } else {
+                Err("Password Id is wrong".into())
+            }
+        }
+    }
+
     /// 更新密码（保留历史记录）
     pub fn update_password(
         &self,
         id: Uuid,
-        new_password: Option<Vec<u8>>
+        new_password: Vec<u8>
     ) -> Result<(), Box<dyn std::error::Error>> {
         let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
         
         if let Some(entry) = passwords_tree.get(id.as_bytes())? {
             let mut entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
             let now = Utc::now();
-            
-            let new_password = match new_password {
-                Some(p) => p,
-                None => {
-                    let policy = entry.policy.clone().ok_or("Password policy must be specified")?;
-                    self.generate_from_policy(&policy)?
-                }
-            };
 
             // 添加到历史记录
             let history = PasswordHistory {
@@ -261,6 +308,21 @@ impl PasswordManager {
         Ok(entries)
     }
 
+    // 获取Uuid
+    pub fn get_uuid(&self, key: &str) -> Result<Uuid, Box<dyn std::error::Error>> {
+        let index_tree = self.db.open_tree(Self::INDEX_TREE)?;
+        let index_key = format!("{:?}:{}", IndexType::Name, key);
+        if let Some(existing) = index_tree.get(&index_key)? {
+            let ids: Vec<Uuid> = decode_from_slice(&existing, standard())?.0;
+            if ids.is_empty() {
+                return Err("No UUID found for the given index type and key".into());
+            }
+            Ok(ids[0])
+        } else {
+            Err("No UUID found for the given index type and key".into())
+        }
+    }
+
     // 更新索引（内部方法）
     fn update_index(
         &self,
@@ -286,61 +348,5 @@ impl PasswordManager {
         }
         
         Ok(())
-    }
-
-    // 删除索引（内部方法）
-    fn remove_index(
-        &self,
-        index_type: IndexType,
-        key: &str,
-        id: Uuid,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let index_tree = self.db.open_tree(Self::INDEX_TREE)?;
-        let index_key = format!("{:?}:{}", index_type, key);
-        
-        if let Some(existing) = index_tree.get(&index_key)? {
-            let mut ids: Vec<Uuid> = decode_from_slice(&existing, standard())?.0;
-            
-            // 移除ID
-            if let Some(pos) = ids.iter().position(|x| *x == id) {
-                ids.remove(pos);
-                
-                if ids.is_empty() {
-                    index_tree.remove(index_key)?;
-                } else {
-                    let mut serialized = [0u8; 100];
-                    encode_into_slice(&ids, &mut serialized, standard())?;
-                    index_tree.insert(index_key, serialized.as_slice())?;
-                }
-            }
-        }
-        
-        Ok(())
-    }
-
-    fn generate_from_policy(&self, policy: &PasswordPolicy) -> Result<Vec<u8>, String> {
-        match policy {
-            PasswordPolicy::Random { length, include_uppercase, include_lowercase, include_numbers, include_special, url_safe, avoid_confusion } => {
-                let options = PasswordOptions {
-                    length: *length,
-                    include_uppercase: *include_uppercase,
-                    include_lowercase: *include_lowercase,
-                    include_numbers: *include_numbers,
-                    include_special: *include_special,
-                    url_safe: *url_safe,
-                    avoid_confusion: *avoid_confusion,
-                };
-                generate_password(&options).map(|s| s.into_bytes())
-            }
-            PasswordPolicy::Memorable { words, separator, include_numbers, capitalization } => {
-                let options = MemorablePasswordOptions {
-                    word_count: *words as usize,
-                    separator: *separator,
-                    include_numbers: *include_numbers,
-                    capitalization: capitalization.clone(),
-                };
-                generate_memorable_password(&options).map(|s| s.into_bytes())
-            }
-        }
     }
 }

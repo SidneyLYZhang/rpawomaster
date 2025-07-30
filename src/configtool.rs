@@ -368,3 +368,31 @@ pub fn select_vault(config: &ConfigFile, vault_arg: Option<String>) -> Result<Va
         }
     }
 }
+
+// 输入密码并完成一般密码的确认
+pub fn input_password() -> Result<String, String> {
+    loop {
+        let password = read_password_from_stdin("Enter new password: ")?;
+        let confirm = read_password_from_stdin("Confirm new password: ")?;
+        if password != confirm {
+            println!("Passwords do not match. Please try again.");
+            continue;
+        }
+        let (rating, score,feedback) = assess_password_strength(&password)?;
+        if score < 2 {
+            println!("⚠️ 警告: 密码安全等级较低 - {}", feedback);
+            let retry = prompt_input("Do you want to try again? (Y/n): ")?;
+            if retry.trim().is_empty() {
+                continue;
+            } else {
+                if retry.trim().to_lowercase() != "y" {
+                    continue;
+                } else {
+                    println!("⭐ 密码安全等级: {} ({}/4)", rating, score);
+                    break Ok(password);
+                }
+            }
+        }
+        break Ok(password);
+    }
+}
