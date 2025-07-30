@@ -113,7 +113,7 @@ cargo run -- init
 | 密码库初始化 | :heavy_check_mark: 已完成 | 2025-07-29 |
 | 增加密码 | :heavy_check_mark: 已完成 | 2025-07-29 |
 | 支持保存[动态令牌（TOTP/HOTP）](https://2fasolution.com/index.html) | 📋 未开始 |  |
-| 更新密码 | :bookmark_tabs: 未开始 |  |
+| 更新密码 | :heavy_check_mark: 已完成 | 2025-07-30 |
 | 查找密码 | :heavy_check_mark: 已完成 | 2025-07-29 |
 | 单元测试 | :heavy_check_mark: 已完成 | 2025-07-29 |
 | 文档完善 | :bookmark_tabs: 未开始 |  |
@@ -136,3 +136,4 @@ TOTP/HOTP，目前还没开始，还有一些保存与输出的逻辑有待解�
 Copyright (c) 2025 Sidney Zhang <zly@lyzhang.me>
 
 rpawomaster is licensed under [Mulan PSL v2](LICENSE) .
+
