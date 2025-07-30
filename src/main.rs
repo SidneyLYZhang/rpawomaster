@@ -17,6 +17,7 @@ mod securecrypto;
 mod configtool;
 
 use clap::{Parser, Args};
+use rpawomaster::configtool::input_password;
 use serde::{Serialize, Deserialize};
 use std::fs;
 use sled::IVec;
@@ -39,7 +40,7 @@ use crate::configtool::*;
 enum Cli {
     /// Initialize a new password vault
     Init {
-        /// User to add password for
+        /// Core Username
         #[arg(short, long)]
         user: Option<String>,
 
@@ -854,7 +855,6 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                             length_input.parse().map_err(|_| "Invalid length".to_string())?
                         };
                         let mut options = passgen::PasswordOptions::default();
-                        let mut password = String::new();
                         // Display default policy and get user confirmation
                         println!("Random password policy:");
                         println!("- Length: {}", length);
@@ -865,7 +865,7 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                         println!("- URL safe: No");
                         println!("- Avoid confusion: No");
                         let confirm_policy = prompt_input("Use this policy? [y/n]: ")?;
-                        if confirm_policy.trim().to_lowercase() != "y" {
+                        options = if confirm_policy.trim().to_lowercase() != "y" {
                             eprintln!("Customizing password policy...");
                             // Get character set preferences
                             let uppercase = prompt_input("Include uppercase letters? [y/n]: ")?.trim().to_lowercase() == "y";
@@ -875,7 +875,7 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                             let url_safe = prompt_input("Make URL safe? [y/n]: ")?.trim().to_lowercase() == "y";
                             let avoid_confusion = prompt_input("Avoid confusing characters? [y/n]: ")?.trim().to_lowercase() == "y";
                             // Generate password with custom policy
-                            options = passgen::PasswordOptions {
+                            passgen::PasswordOptions {
                                 length,
                                 include_uppercase: uppercase,
                                 include_lowercase: lowercase,
@@ -883,13 +883,15 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                                 include_special: special,
                                 url_safe,
                                 avoid_confusion,
-                            };
-                            password = passgen::generate_password(&options)?;
-                            println!("Generated password: {}", password);
+                            }
                         } else {
-                            let password = passgen::generate_password(&options)?;
-                            println!("Generated password: {}", password);
-                        }
+                            passgen::PasswordOptions {
+                                length,
+                                ..options
+                            }
+                        };
+                        let password = passgen::generate_password(&options)?;
+                        println!("Generated password: {}", password);
                         
                         let confirm = prompt_input("Use this password? [y/n]: ")?;
                         if confirm.trim().to_lowercase() == "y" {
@@ -920,7 +922,6 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                             words_input.parse().map_err(|_| "Invalid number of words".to_string())?
                         };
                         let mut options = passgen::MemorablePasswordOptions::default();
-                        let mut password = String::new();
                         // Display memorable password policy and get confirmation
                         println!("Memorable password policy:");
                         println!("- Number of words: {}", words);
@@ -928,7 +929,7 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                         println!("- Include numbers: Yes");
                         println!("- Capitalization: CamelCase (first letter uppercase)");
                         let confirm_policy = prompt_input("Use this policy? [y/n]: ")?;
-                        if confirm_policy.trim().to_lowercase() != "y" {
+                        options = if confirm_policy.trim().to_lowercase() != "y" {
                             eprintln!("Customizing memorable password policy...");
                             // Get separator
                             let separator = prompt_input("Enter separator character: ")?;
@@ -943,15 +944,20 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                                 _ => passgen::Capitalization::NoCapitalization,
                             };
                             // Generate password with custom policy
-                            options = passgen::MemorablePasswordOptions {
+                            passgen::MemorablePasswordOptions {
                                 word_count: words,
                                 include_numbers,
                                 separator,
                                 capitalization,
-                            };
-                            password = passgen::generate_memorable_password(&options)?;
-                            println!("Generated password: {}", password);
-                        }
+                            }
+                        } else {
+                            passgen::MemorablePasswordOptions {
+                                word_count: words,
+                                ..options
+                            }
+                        };
+                        let password = passgen::generate_memorable_password(&options)?;
+                        println!("Generated password: {}", password);
 
                         let confirm = prompt_input("Use this password? [y/n]: ")?;
                         if confirm.trim().to_lowercase() == "y" {
@@ -978,26 +984,14 @@ fn add_password_interactive(user_arg: Option<String>, vault_arg: Option<String>)
                 };
             },
             "m" | "manual" => {
-                let password = read_password_from_stdin("Enter password: ")?;
-                let confirm = read_password_from_stdin("Confirm password: ")?;
-                if password == confirm {
-                    let expiration_days_input = prompt_input("Enter password expiration days (0 for no expiration, default 0): ")?;
-                    let expiration_days = if expiration_days_input.trim().is_empty() {
-                        0
-                    } else {
-                        expiration_days_input.parse().map_err(|_| "Invalid expiration days".to_string())?
-                    };
-                    let (_, score, feedback) = passgen::assess_password_strength(&password)?;
-                    if score < 3 {
-                        println!("Password is too weak ({}/4) : {}", score, feedback);
-                        println!("Please try again.");
-                        continue;
-                    }
-                    break (password, None, expiration_days);
+                let password = input_password()?;
+                let expiration_days_input = prompt_input("Enter password expiration days (0 for no expiration, default 0): ")?;
+                let expiration_days = if expiration_days_input.trim().is_empty() {
+                    0
                 } else {
-                    eprintln!("Passwords do not match");
-                    continue;
-                }
+                    expiration_days_input.parse().map_err(|_| "Invalid expiration days".to_string())?
+                };
+                break (password, None, expiration_days);
             },
             _ => {
                 eprintln!("Invalid choice");
