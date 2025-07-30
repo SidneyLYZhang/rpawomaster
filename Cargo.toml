@@ -2,7 +2,14 @@
 name = "rpawomaster"
 version = "0.1.8"
 edition = "2024"
-build = "build.rs"  # 使用构建脚本
+authors = ["Sidney Zhang <zly@lyzhang.me>"]
+description = "A secure password manager written in Rust"
+license = "MulanPSL-2.0"
+repository = "https://github.com/SidneyLYZhang/rpawomaster"
+keywords = ["cli", "tool", "password manager"]
+categories = ["command-line-utilities"]
+
+build = "build.rs"
 
 [package.metadata]
 watch.data = ["data/*"]
