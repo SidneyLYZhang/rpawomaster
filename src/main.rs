@@ -34,7 +34,7 @@ use crate::configtool::*;
 
 #[derive(Debug, Parser)]
 #[command(name = "rpawomaster")]
-#[command(about = "A secure password manager written in Rust", long_about = None)]
+#[command(author, version, about = "A secure password manager written in Rust", long_about = None)]
 
 enum Cli {
     /// Initialize a new password vault
