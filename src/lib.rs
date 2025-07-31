@@ -5,8 +5,8 @@
 // |_| \_\_|   \__,_| \_/\_/ \___/|_|  |_|\__,_|___/\__\___|_|   
 //
 // Author : Sidney Zhang <zly@lyzhang.me>
-// Date : 2025-07-02
-// Version : 0.1.0
+// Date : 2025-07-30
+// Version : 0.1.9
 // License : Mulan PSL v2
 //
 // lib.rs : 密码管理库

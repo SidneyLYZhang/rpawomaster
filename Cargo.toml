@@ -45,6 +45,9 @@ flate2 = "1.0"    # 新增tar.gz支持
 tempfile = "3.3"  # 新增临时文件支持
 bincode = { version = "2.0.1", features = ["serde"]}
 arboard = "3.6.0"
+totp-rs = { version = "5.7", features = ["serde_support", "gen_secret"] }
+slauth = "0.7.15"
+zeroize = { version = "1.6", features = ["derive"] }
 
 [dev-dependencies]
 walkdir = "2.4"
