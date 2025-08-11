@@ -28,7 +28,7 @@ use crate::passgen::{
     Capitalization, 
     evaluate_and_display_password_strength, 
     generate_from_policy};
-use crate::securecrypto::SecureCrypto;
+use crate::securecrypto::{SecureCrypto, generate_rsa_keypair, save_keypair, read_keypair};
 use crate::pwsmanager::PasswordManager;
 use crate::configtool::*;
 
@@ -171,9 +171,9 @@ enum GenSubcommand {
 enum CryptSubcommand {
     /// Encrypt a file or directory
     En {
-        /// User to use for encryption
+        /// Password to use for encryption
         #[arg(short, long)]
-        user: Option<String>,
+        password: Option<String>,
         
         /// Source path to encrypt
         #[arg(short, long)]
@@ -186,9 +186,9 @@ enum CryptSubcommand {
     
     /// Decrypt a file or directory
     De {
-        /// User to use for decryption
+        /// Password to use for decryption
         #[arg(short, long)]
-        user: Option<String>,
+        password: Option<String>,
         
         /// Source path to decrypt
         #[arg(short, long)]
@@ -704,48 +704,74 @@ fn main() -> Result<(), String> {
             Ok(())
         },
         Cli::Crypt { subcommand } => match subcommand {
-            CryptSubcommand::En { user, source, target } => {
-                // 获取用户名
-                let username = get_username(user)?;
+            CryptSubcommand::En { password, source, target } => {
+                // 生成加密密钥对
+                let (private_key, public_key) = generate_rsa_keypair()?;
 
-                // 获取core password
-                let core_password = prompt_core_password(username.clone())?;
+                // 确认加密密码
+                let password = match password {
+                    Some(p) => p,
+                    None => {
+                        let password = read_password_from_stdin("Enter password: ")?;
+                        let confirm = read_password_from_stdin("Confirm password: ")?;
+                        if password != confirm {
+                            return Err("Passwords do not match".to_string());
+                        }
+                        password
+                    }
+                };
 
-                // 正式加载配置文件
-                let config = load_user_config(&username)?;
-
-                // 解密私钥
-                let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+                // 加密私钥
+                let encrypted_private_key = encrypt_private_key(&private_key, &password)?;
 
                 // 初始化SecureCrypto
-                let secure_crypto = SecureCrypto::from_pem_keys(&config.public_key,&private_key)
+                let secure_crypto = SecureCrypto::from_pem_keys(&public_key,&private_key)
                     .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
 
                 // 执行加密
-                secure_crypto.encrypt_path(&source, &target)
+                let temp_path = tempdir().map_err(|e| format!("Failed to create temp dir: {}", e))?;
+                let encrypted_dir = temp_path.path();
+                save_keypair(encrypted_private_key, public_key, encrypted_dir)?;
+                secure_crypto.encrypt_path(&source, &encrypted_dir)
                     .map_err(|e| format!("Encryption failed: {}", e))?;
+                let dst = PathBuf::from(target.clone());
+                let src = PathBuf::from(source.clone());
+                let dst_path = dst.join(format!("{}.esz",src.file_name().unwrap().to_string_lossy()));
+                secure_crypto.create_tar_archive(encrypted_dir, &dst_path)
+                            .map_err(|e| format!("Failed to create tar archive: {}", e))?;
                 println!("Successfully encrypted '{}' to '{}'", source, target);
                 Ok(())
             },
-            CryptSubcommand::De { user, source, target } => {
-                // 获取用户名
-                let username = get_username(user)?;
+            CryptSubcommand::De { password, source, target } => {
+                // 获取密码
+                let password = match password {
+                    Some(p) => p,
+                    None => read_password_from_stdin("Enter password: ")?,
+                };
 
-                // 获取core password
-                let core_password = prompt_core_password(username.clone())?;
-
-                // 正式加载配置文件
-                let config: ConfigFile = load_config(&username, &core_password)?;
+                // 正式加载密钥文件
+                let temp_path = tempdir().map_err(|e| format!("Failed to create temp dir: {}", e))?;
+                let encrypted_dir = temp_path.path();
+                let src = PathBuf::from(source.clone());
+                {
+                    let (private_key, public_key) = generate_rsa_keypair()?;
+                    let secure_crypto = SecureCrypto::from_pem_keys(&public_key,&private_key)
+                                                        .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
+                    secure_crypto.extract_tar_archive(&src, encrypted_dir)
+                                    .map_err(|e| format!("Failed to extract tar archive: {}", e))?;
+                }
+                let (encrypted_private_key, public_key) = read_keypair(encrypted_dir)?;
 
                 // 解密私钥
-                let private_key = decrypt_private_key(&config.encrypted_private_key, &core_password)?;
+                let private_key = decrypt_private_key(&encrypted_private_key, &password)?;
 
                 // 初始化SecureCrypto
-                let secure_crypto = SecureCrypto::from_pem_keys(&config.public_key,&private_key)
+                let secure_crypto = SecureCrypto::from_pem_keys(&public_key,&private_key)
                     .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
 
                 // 执行解密
-                secure_crypto.decrypt_path(&source, &target)
+                let src_path = encrypted_dir.join(format!("{}.esz", src.file_stem().unwrap().to_string_lossy()));
+                secure_crypto.decrypt_path(&src_path, &target)
                     .map_err(|e| format!("Decryption failed: {}", e))?;
                 println!("Successfully decrypted '{}' to '{}'", source, target);
                 Ok(())

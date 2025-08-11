@@ -1,5 +1,7 @@
 # RPaWoMaster
 
+[English](README_EN.md) | 中文
+
 之前使用python写了一个密码管理器，但是不是每个同事都有python，所以一直计划着写个新的通用性更强的版本。
 而且都这么多年了，对于公司同事的密码管理现状，真的是依然不敢恭维。各种蜜汁操作。
 
@@ -167,18 +169,20 @@ rpawomaster gen random -l 22
 | 密码强度检验 | :heavy_check_mark: 已完成 | 2025-06-30 |
 | 密码库初始化 | :heavy_check_mark: 已完成 | 2025-07-29 |
 | 增加密码 | :heavy_check_mark: 已完成 | 2025-07-29 |
-| 支持保存[动态令牌（TOTP/HOTP）](https://2fasolution.com/index.html) | 📋 未开始 |  |
 | 更新密码 | :heavy_check_mark: 已完成 | 2025-07-30 |
 | 查找密码 | :heavy_check_mark: 已完成 | 2025-07-29 |
+| 删除密码 | :heavy_check_mark: 已完成 | 2025-07-30 |
+| 导出密码库 | :heavy_check_mark: 已完成 | 2025-07-30 |
+| 加密/解密文件 | :heavy_check_mark: 已完成 | 2025-07-30 |
+| 支持保存[动态令牌（TOTP/HOTP）](https://2fasolution.com/index.html) | :construction: 进行中 | 2025-07-31 |
+| 粘贴板功能（自动清除） | :heavy_check_mark: 部分完成，未实装 | 2025-07-31 |
+| 易记密码生成 | :heavy_check_mark: 已完成 | 2025-07-31 |
 | 单元测试 | :heavy_check_mark: 已完成 | 2025-07-29 |
-| 粘贴板功能 | :bookmark_tabs: 未开始 |  |
-| 文档完善 | 完善中 ... |  |
-| 发布v1.0版本 | :bookmark_tabs: 未开始 |  |
+| 文档完善 | 完善中 ... | 2025-07-31 |
+| 发布v0.1.8版本 | :heavy_check_mark: 已完成 | 2025-07-31 |
+| 发布v1.0版本 | :bookmark_tabs: 计划中 |  |
 
-目前，密码库基本功能已经大体完成，目前还在修改部分功能的实现方案。目前密码查询可能还存在一些问题。
-如果你在使用时遇到了其他问题，欢迎提出issue。
-
-TOTP/HOTP，目前还没开始，还有一些保存与输出的逻辑有待解决。
+目前，密码库核心功能已基本完成，v0.1.8版本已发布。TOTP/HOTP功能正在开发中，预计将在后续版本中完成。
 
 ## 贡献指南
 1. Fork本仓库
@@ -192,4 +196,6 @@ TOTP/HOTP，目前还没开始，还有一些保存与输出的逻辑有待解�
 Copyright (c) 2025 Sidney Zhang <zly@lyzhang.me>
 
 rpawomaster is licensed under [Mulan PSL v2](LICENSE) .
+
+另，可记忆密码所使用的 [`wordlist.txt`](data/wordlist.txt) 来自 [EFF](https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt) .
 

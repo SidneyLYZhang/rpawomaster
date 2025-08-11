@@ -268,3 +268,58 @@ fn test_encrypt_decrypt_directory() {
     assert!(empty_decrypted_dir.exists(), "Empty directory decryption failed");
     assert!(empty_decrypted_dir.read_dir().unwrap().next().is_none(), "Decrypted empty directory should be empty");
 }
+
+#[test]
+fn test_save_and_read_keypair() {
+    use rpawomaster::securecrypto::{save_keypair, read_keypair};
+    
+    // 生成密钥对
+    let (private_pem, public_pem) = generate_rsa_keypair().expect("Failed to generate RSA key pair");
+    
+    // 创建临时目录
+    let temp_dir = tempdir().expect("Failed to create temp directory");
+    let temp_dir_path = temp_dir.path();
+    
+    // 测试保存密钥对
+    save_keypair(private_pem.clone(), public_pem.clone(), temp_dir_path)
+        .expect("Failed to save keypair");
+    
+    // 验证文件是否已创建
+    let private_key_path = temp_dir_path.join("private_key.esz");
+    let public_key_path = temp_dir_path.join("public_key.esz");
+    
+    assert!(private_key_path.exists(), "Private key file not created");
+    assert!(public_key_path.exists(), "Public key file not created");
+    
+    // 验证文件内容不为空
+    let private_key_content = fs::read_to_string(&private_key_path).expect("Failed to read private key file");
+    let public_key_content = fs::read_to_string(&public_key_path).expect("Failed to read public key file");
+    
+    assert!(!private_key_content.is_empty(), "Private key file is empty");
+    assert!(!public_key_content.is_empty(), "Public key file is empty");
+    
+    // 验证内容匹配
+    assert_eq!(private_key_content, private_pem, "Private key content mismatch");
+    assert_eq!(public_key_content, public_pem, "Public key content mismatch");
+    
+    // 测试读取密钥对
+    let (read_private, read_public) = read_keypair(temp_dir_path)
+        .expect("Failed to read keypair");
+    
+    // 验证读取的内容与原始内容匹配
+    assert_eq!(read_private, private_pem, "Read private key does not match original");
+    assert_eq!(read_public, public_pem, "Read public key does not match original");
+    
+    // 测试使用读取的密钥创建SecureCrypto实例
+    let crypto_from_read = SecureCrypto::from_pem_keys(&read_public, &read_private)
+        .expect("Failed to create SecureCrypto from read keys");
+    
+    // 验证密钥可用性：加密解密测试
+    let test_str = "Test string for keypair functionality";
+    let encrypted = crypto_from_read.encrypt_string(test_str)
+        .expect("Failed to encrypt with read keys");
+    let decrypted = crypto_from_read.decrypt_string(&IVec::from(encrypted))
+        .expect("Failed to decrypt with read keys");
+    
+    assert_eq!(decrypted, test_str, "Decrypted string does not match original");
+}

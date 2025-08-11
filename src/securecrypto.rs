@@ -24,7 +24,7 @@ use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs8::LineEnding;
 use sled::IVec;
 use std::{
-    fs::{self, File}, io::{Read, Write}, path::Path
+    fs::{self, File}, io::{self, Read, Write}, path::Path
 };
 use std::io::{BufReader, BufWriter};
 use tar::{Archive, Builder};
@@ -178,7 +178,7 @@ impl SecureCrypto {
 
         // 根据扩展名决定是否压缩
         let extension = tar_path.extension().and_then(|e| e.to_str());
-        let use_gzip = matches!(extension, Some("gz") | Some("tgz"));
+        let use_gzip = matches!(extension, Some("gz") | Some("tgz") | Some("esz"));
 
         // 如果压缩就用 GzEncoder 包装，否则直接写裸 tar
         let mut tar_builder = if use_gzip {
@@ -229,7 +229,8 @@ impl SecureCrypto {
 
         // 根据扩展名决定是否用 gzip 解码
         let extension = tar_path.extension().and_then(|e| e.to_str());
-        let use_gzip = matches!(extension, Some("gz") | Some("tgz"));
+        let use_gzip = matches!(extension, Some("gz") | Some("tgz") | Some("esz"));
+
 
         let file = File::open(tar_path)?;
         let mut archive = if use_gzip {
@@ -475,4 +476,34 @@ pub fn generate_rsa_keypair() -> Result<(String, String), String> {
         .map_err(|e| format!("Failed to serialize public key: {}", e))?;
 
     Ok((private_key_pem.to_string(), public_key_pem.to_string()))
+}
+
+pub fn save_keypair(encrypted_private_key: String, public_key: String, path: &Path) -> Result<(), String> {
+    let private_key_path = path.join("prikey.esz");
+    let public_key_path = path.join("pubkey.esz");
+
+    let mut private_key_file = File::create(&private_key_path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    let mut public_key_file = File::create(&public_key_path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    private_key_file.write_all(encrypted_private_key.as_bytes())
+        .map_err(|e| format!("Failed to write private key: {}", e))?;
+    public_key_file.write_all(public_key.as_bytes())
+        .map_err(|e| format!("Failed to write public key: {}", e))?;
+    Ok(())
+}
+
+pub fn read_keypair(path: &Path) -> Result<(String, String), String> {
+    let private_key_path = path.join("prikey.esz");
+    let public_key_path = path.join("pubkey.esz");
+
+    let private_key_file = File::open(&private_key_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let public_key_file = File::open(&public_key_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let private_key = io::read_to_string(private_key_file)
+        .map_err(|e| format!("Failed to read private key: {}", e))?;
+    let public_key = io::read_to_string(public_key_file)
+        .map_err(|e| format!("Failed to read public key: {}", e))?;
+    Ok((private_key, public_key))
 }
