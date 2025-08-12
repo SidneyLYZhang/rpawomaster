@@ -33,13 +33,15 @@ use crate::passgen::assess_password_strength;
 pub struct VaultMetadata {
     pub name: String,
     pub path: String,
+    pub opt_private_key: Option<String>,
+    pub opt_public_key: Option<String>,
     pub created_at: String,
     pub last_modified: String,
 }
 
 impl VaultMetadata {
     pub fn get_vaultmetadata(vaultpath: &str) -> Result<Self, ConfigError> {
-        let metadata_path = Path::new(vaultpath).join("metadata.json");
+        let metadata_path = Path::new(vaultpath).join(".metadata.json");
         let metadata_file = fs::File::open(&metadata_path)
             .map_err(|e| format!("Failed to open metadata file: {}", e)).unwrap();
         let metadata: Self = serde_json::from_reader(metadata_file)
@@ -50,12 +52,14 @@ impl VaultMetadata {
         Self {
             name: vault.name.clone(),
             path: vault.path.clone(),
+            opt_private_key: None,
+            opt_public_key: None,
             created_at: vault.created_at.clone(),
             last_modified: vault.last_modified.clone(),
         }
     }
     pub fn save_vaultmetadata(&self) -> Result<(), ConfigError> {
-        let metadata_path = Path::new(&self.path).join("metadata.json");
+        let metadata_path = Path::new(&self.path).join(".metadata.json");
         let metadata_file = fs::File::create(&metadata_path)
             .map_err(|e| format!("Failed to create metadata file: {}", e)).unwrap();
         serde_json::to_writer_pretty(metadata_file, &self)
@@ -65,6 +69,12 @@ impl VaultMetadata {
     pub fn vault_updated(&mut self) {
         self.last_modified = Utc::now().to_rfc3339();
         self.save_vaultmetadata().unwrap();
+    }
+    pub fn update_keypair(&mut self, prikey: String, pubkey: String) -> Result<(), ConfigError> {
+        self.opt_private_key = Some(prikey);
+        self.opt_public_key = Some(pubkey);
+        self.vault_updated();
+        Ok(())
     }
 }
 

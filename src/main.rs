@@ -156,6 +156,45 @@ enum Cli {
         #[arg(short, long)]
         vault: Option<String>,
     },
+
+    /// Manage OTP
+    Xotp {
+        #[command(subcommand)]
+        subcommand: XotpSubcommand,
+    }
+}
+
+#[derive(Debug, Parser)]
+enum XotpSubcommand {
+    /// Add a new OTP
+    Add {
+        /// password name
+        #[arg(short, long)]
+        name: String,
+
+        /// User to add OTP to
+        #[arg(short, long)]
+        user: Option<String>,
+
+        /// Vault to add OTP to
+        #[arg(short, long)]
+        vault: Option<String>,
+
+        /// OTP secret or OTP url
+        #[arg(short, long)]
+        secret: String,
+    },
+
+    /// List all OTPs
+    List {
+        /// User to list OTPs for
+        #[arg(short, long)]
+        user: Option<String>,
+
+        /// Vault to list OTPs from
+        #[arg(short, long)]
+        vault: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -841,6 +880,26 @@ fn main() -> Result<(), String> {
             ).map_err(|e| format!("创建加密归档失败: {}", e))?;
 
             println!("成功导出用户 '{}' 的数据到: {}", user, export_path.display());
+            Ok(())
+        },
+        Cli::Xotp { subcommand } => {
+            match subcommand {
+                XotpSubcommand::Add { name, user, vault, secret } => {
+                    // Get username
+                    let user = get_username(user)?;
+                    // Get core password
+                    let core_password = prompt_core_password(user.clone())?;
+
+                    // Get config
+                    let config = load_config(&user, &core_password)?;
+                },
+                XotpSubcommand::List { user, vault } => {
+                    // Get username
+                    let user = get_username(user)?;
+                    // Get core password
+                    let core_password = prompt_core_password(user.clone())?;
+                },
+            };
             Ok(())
         },
     }
