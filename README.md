@@ -75,7 +75,9 @@ cargo install rpawomaster
 
 ## 使用方法
 
-因为目前只完成了核心功能，以下使用方式仅作当前版本的使用范例。
+以下为目前的核心功能简洁，详细使用方法可以参看 [zread](https://zread.ai) 生成的 [中文说明文档](https://zread.ai/SidneyLYZhang/rpawomaster) 。
+也可以参考我写的使用例子 [Examples](examples/README.md) 。
+
 
 ```bash
 # 查看帮助

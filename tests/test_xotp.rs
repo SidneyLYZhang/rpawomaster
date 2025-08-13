@@ -63,7 +63,7 @@ mod tests {
         let crypto = create_test_crypto();
         let secret = "JBSWY3DPEHPK3PXP";
         
-        let xotp = XOTP::from_secret(secret, &crypto);
+        let xotp = XOTP::from_text(secret, &crypto);
         
         assert!(matches!(xotp.otptype, XOTPType::TOTP));
         assert!(xotp.secret.len() > 0); // 加密后的密钥不应为空
@@ -78,7 +78,7 @@ mod tests {
         let crypto = create_test_crypto();
         let uri = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA1&digits=6&period=30";
         
-        let xotp = XOTP::from_uri(uri, &crypto);
+        let xotp = XOTP::from_text(uri, &crypto);
         
         assert!(matches!(xotp.otptype, XOTPType::TOTP));
         assert!(xotp.secret.len() > 0);
