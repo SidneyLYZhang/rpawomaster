@@ -93,7 +93,7 @@ mod tests {
         let crypto = create_test_crypto();
         let uri = "otpauth://hotp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA256&digits=8&counter=100";
         
-        let xotp = XOTP::from_uri(uri, &crypto);
+        let xotp = XOTP::from_text(uri, &crypto);
         
         assert!(matches!(xotp.otptype, XOTPType::HOTP));
         assert!(xotp.secret.len() > 0);
@@ -130,19 +130,10 @@ mod tests {
     }
 
     #[test]
-    fn test_is_uri() {
-        assert!(super::super::is_uri("otpauth://totp/test"));
-        assert!(super::super::is_uri("otpauth://hotp/test"));
-        assert!(!super::super::is_uri("not-a-uri"));
-        assert!(!super::super::is_uri(""));
-        assert!(!super::super::is_uri("http://example.com"));
-    }
-
-    #[test]
     fn test_generate_totp_code() {
         let crypto = create_test_crypto();
-        let secret = "JBSWY3DPEHPK3PXP";
-        let xotp = XOTP::from_secret(secret, &crypto);
+        let secret = "QD6ZZ5JWGL4SSXUZD52CCQDSHTBDWSNX";
+        let xotp = XOTP::from_text(secret, &crypto);
         
         // 生成TOTP代码，应该返回6位数字字符串
         let code = xotp.generate_totp_code(&crypto);
@@ -157,7 +148,7 @@ mod tests {
     #[test]
     fn test_generate_hotp_code() {
         let crypto = create_test_crypto();
-        let secret = "JBSWY3DPEHPK3PXP";
+        let secret = "QD6ZZ5JWGL4SSXUZD52CCQDSHTBDWSNX";
         let mut xotp = XOTP {
             otptype: XOTPType::HOTP,
             secret: crypto.encrypt_string(secret).unwrap(),
@@ -189,7 +180,7 @@ mod tests {
     #[test]
     fn test_increment_counter() {
         let crypto = create_test_crypto();
-        let secret = "JBSWY3DPEHPK3PXP";
+        let secret = "QD6ZZ5JWGL4SSXUZD52CCQDSHTBDWSNX";
         
         // 测试HOTP计数器增加
         let mut xotp_hotp = XOTP {
@@ -227,7 +218,7 @@ mod tests {
     #[test]
     fn test_get_remaining_seconds() {
         let crypto = create_test_crypto();
-        let secret = "JBSWY3DPEHPK3PXP";
+        let secret = "QD6ZZ5JWGL4SSXUZD52CCQDSHTBDWSNX";
         
         // 测试TOTP获取剩余时间
         let xotp_totp = XOTP {
@@ -260,8 +251,8 @@ mod tests {
     #[test]
     fn test_xotp_serialization_deserialization() {
         let crypto = create_test_crypto();
-        let uri = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA256&digits=8&period=60";
-        let xotp = XOTP::from_uri(uri, &crypto);
+        let uri = "otpauth://totp/Example:alice@google.com?secret=QD6ZZ5JWGL4SSXUZD52CCQDSHTBDWSNX&issuer=Example&algorithm=SHA256&digits=8&period=60";
+        let xotp = XOTP::from_text(uri, &crypto);
         
         // 序列化
         let serialized = serde_json::to_string(&xotp).unwrap();
@@ -282,7 +273,7 @@ mod tests {
     #[test]
     fn test_xotp_with_different_digits() {
         let crypto = create_test_crypto();
-        let secret = "JBSWY3DPEHPK3PXP";
+        let secret = "QD6ZZ5JWGL4SSXUZD52CCQDSHTBDWSNX";
         
         // 测试不同位数的TOTP
         for &digits in &[6, 7, 8] {
@@ -304,7 +295,7 @@ mod tests {
     #[test]
     fn test_xotp_with_different_algorithms() {
         let crypto = create_test_crypto();
-        let secret = "JBSWY3DPEHPK3PXP";
+        let secret = "QD6ZZ5JWGL4SSXUZD52CCQDSHTBDWSNX";
         
         // 测试不同算法的TOTP
         for algorithm in &[XOTPAlgorithm::SHA1, XOTPAlgorithm::SHA256, XOTPAlgorithm::SHA512] {
@@ -329,7 +320,8 @@ mod tests {
         
         // 测试缺少参数的URI，应该使用默认值
         let uri = "otpauth://totp/TestUser";
-        let xotp = XOTP::from_uri(uri, &crypto);
+        let xotp = XOTP::from_text(uri, &crypto);
+
         
         assert!(matches!(xotp.otptype, XOTPType::TOTP));
         assert!(matches!(xotp.algorithm, XOTPAlgorithm::SHA1)); // 默认值
