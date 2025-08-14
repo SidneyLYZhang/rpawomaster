@@ -70,12 +70,32 @@ impl VaultMetadata {
         self.last_modified = Utc::now().to_rfc3339();
         self.save_vaultmetadata().unwrap();
     }
-    pub fn update_keypair(&mut self, prikey: String, pubkey: String) -> Result<(), ConfigError> {
+    pub fn get_keypair(&mut self) -> (String, String) {
+        if self.check_keypair() {
+            let (prikey, pubkey) = get_opt_password(&self).unwrap();
+            let password = read_password_from_stdin("Enter new Authentication Password:").unwrap();
+            let comfirm = read_password_from_stdin("Confirm new Authentication Password:").unwrap();
+            if password != comfirm {
+                panic!("Passwords do not match");
+            }
+            let encrypted_prikey = encrypt_private_key(&prikey, &password).unwrap();
+            self.update_keypair(encrypted_prikey, pubkey).unwrap();
+        }
+        (self.opt_private_key.clone().unwrap(), self.opt_public_key.clone().unwrap())
+    }
+    fn check_keypair(&self) -> bool {
+        let last_modified = DateTime::parse_from_rfc3339(&self.last_modified).unwrap();
+        let now = Utc::now();
+        let diff = now.signed_duration_since(last_modified);
+        diff.num_days() >= 90
+    }
+    fn update_keypair(&mut self, prikey: String, pubkey: String) -> Result<(), ConfigError> {
         self.opt_private_key = Some(prikey);
         self.opt_public_key = Some(pubkey);
         self.vault_updated();
         Ok(())
     }
+
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,5 +438,28 @@ pub fn input_password_check() -> Result<String, String> {
             }
         }
         break Ok(password);
+    }
+}
+
+pub fn get_opt_password(vaultmeta: &VaultMetadata) -> Result<(String, String), String> {
+    let corekey = match &vaultmeta.opt_private_key {
+        Some(_) => {
+            read_password_from_stdin("Enter Authentication Password: ")?
+        },
+        None => {
+            let password = read_password_from_stdin("Enter Authentication Password: ")?;
+            let confirm = read_password_from_stdin("Confirm Authentication Password: ")?;
+            if password != confirm {
+                return Err("Passwords do not match. Please try again.".to_string());
+            }
+            password
+        }
+    };
+    if vaultmeta.opt_private_key.is_none() {
+        let (prikey, pubkey) = generate_rsa_keypair()?;
+        Ok((prikey, pubkey))
+    } else {
+        let prikey = decrypt_private_key(&vaultmeta.opt_private_key.clone().unwrap(), &corekey)?;
+        Ok((prikey, vaultmeta.opt_public_key.clone().unwrap()))
     }
 }

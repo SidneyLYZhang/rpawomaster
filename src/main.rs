@@ -15,6 +15,7 @@ mod pwsmanager;
 mod passgen;
 mod securecrypto;
 mod configtool;
+mod xotp;
 
 use clap::{Parser, Args};
 use serde::{Serialize, Deserialize};
@@ -23,6 +24,7 @@ use sled::IVec;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 use std::io::{self, Write};
+use uuid::Uuid;
 
 use crate::passgen::{
     Capitalization, 
@@ -31,6 +33,7 @@ use crate::passgen::{
 use crate::securecrypto::{SecureCrypto, generate_rsa_keypair, save_keypair, read_keypair};
 use crate::pwsmanager::PasswordManager;
 use crate::configtool::*;
+use crate::xotp::{XOTPType, XOTP, generate_code};
 
 #[derive(Debug, Parser)]
 #[command(name = "rpawomaster")]
@@ -892,12 +895,50 @@ fn main() -> Result<(), String> {
 
                     // Get config
                     let config = load_config(&user, &core_password)?;
+
+                    // Get Vault metadata
+                    let vault = select_vault(&config, vault)?;
+                    let mut vault_metadata = VaultMetadata::get_vaultmetadata(&vault.path).unwrap();
+
+                    // Get Key Pair
+                    let (private_key, public_key) = vault_metadata.get_keypair();
+                    let secure_crypto = SecureCrypto::from_pem_keys(&public_key, &private_key)
+                                                        .map_err(|e| format!("Failed to initialize crypto: {}", e))?;
+                    
+                    // Add OTP
+                    let otp = XOTP::from_text(&secret, &secure_crypto);
+                    let pw = PasswordManager::new(&vault.path)
+                                                                .map_err(|e| e.to_string())?;
+                    let uuid = pw.get_uuid(&name).map_err(|e| e.to_string())?;
+                    pw.add_otp(uuid, otp).map_err(|e| e.to_string())?;
                 },
                 XotpSubcommand::List { user, vault } => {
                     // Get username
                     let user = get_username(user)?;
                     // Get core password
                     let core_password = prompt_core_password(user.clone())?;
+                    // Get config
+                    let config = load_config(&user, &core_password)?;
+                    // Get Vault
+                    let vault = select_vault(&config, vault)?;
+                    // list opt
+                    let pw = PasswordManager::new(&vault.path)
+                                                                .map_err(|e| e.to_string())?;
+                    let otp_entries = pw.list_otp().map_err(|e| e.to_string())?;
+                    if otp_entries.is_empty() {
+                        println!("No OTP entries found.");
+                    } else {
+                        println!("OTP Entries (name | note | url):");
+                        for entry in otp_entries.clone() {
+                            let uuid = entry.id;
+                            let passentry = pw.get_password_entry(uuid).map_err(|e| e.to_string())?;
+                            println!("- {} | {} | {}", 
+                                    passentry.name, 
+                                    passentry.note.unwrap_or("-".to_string()), 
+                                    passentry.url.unwrap_or("-".to_string()));
+                        }
+                        println!("Total: {} entries", otp_entries.len());
+                    }
                 },
             };
             Ok(())
@@ -1227,7 +1268,42 @@ fn search_passwords(text: String, user: Option<String>, vault: Option<String>, e
         println!("URL: {}", url);
     }
     println!("Password: {}", decrypted_password.clone());
+    if let Some((otpinfo, optcode)) = get_otp_code(&target_vault, &selected_entry.id) {
+        println!("OTP Code: {}", optcode);
+        match &otpinfo.otptype {
+            XOTPType::TOTP => {
+                let lesstime = otpinfo.get_remaining_seconds().unwrap();
+                println!("Time Left: {} seconds", lesstime);
+            }
+            XOTPType::HOTP => {
+                println!("");
+            }
+        }
+    }
     println!("------------------------");
 
     Ok(())
+}
+
+fn get_otp_code(vault: &Vault, id: &Uuid) -> Option<(XOTP, String)> {
+    // 获取密码库元数据
+    let vault_meta = VaultMetadata::get_vaultmetadata(&vault.path).ok()?;
+    
+    // 获取密钥对
+    let (private_key, public_key) = get_opt_password(&vault_meta).ok()?;
+    
+    // 初始化密码管理器
+    let password_manager = PasswordManager::new(&vault.path).ok()?;
+    
+    // 获取OTP配置
+    let otp_config = password_manager.get_otp(*id).ok()?;
+    if otp_config.is_none() {
+        return None;
+    }
+    let mut otp_info = otp_config.unwrap();
+
+    // 创建加密实例并生成OTP代码
+    let crypto = SecureCrypto::from_pem_keys(&public_key, &private_key).ok()?;
+    let code = generate_code(&mut otp_info, &crypto);
+    Some((otp_info.clone(), code))
 }

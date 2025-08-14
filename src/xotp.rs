@@ -223,3 +223,14 @@ impl XOTP {
 fn is_uri(text: &str) -> bool {
     text.starts_with("otpauth://")
 }
+
+pub fn generate_code(xotp: &mut XOTP, crypto: &SecureCrypto) -> String {
+    match xotp.otptype {
+        XOTPType::TOTP => {
+            xotp.generate_totp_code(crypto)
+        },
+        XOTPType::HOTP => {
+            xotp.generate_hotp_code(crypto)
+        }
+    }
+}

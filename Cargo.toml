@@ -1,6 +1,6 @@
 [package]
 name = "rpawomaster"
-version = "0.1.8"
+version = "0.2.0"
 edition = "2024"
 authors = ["Sidney Zhang <zly@lyzhang.me>"]
 description = "A secure password manager written in Rust"
@@ -11,8 +11,8 @@ categories = ["command-line-utilities"]
 
 build = "build.rs"
 
-[package.metadata]
-watch.data = ["data/*"]
+[package.metadata.watch]
+data = ["data/*"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -34,7 +34,6 @@ hmac = "0.12"
 chrono = { version = "0.4.41", features = ["serde", "alloc"] }
 rusqlite = "0.29.0"
 anyhow = "1.0"
-base64 = "0.22"
 sled = "0.34.7"
 uuid = { version = "1.17", features = ["v4","serde"]}
 aes = "0.8"
@@ -47,9 +46,7 @@ bincode = { version = "2.0.1", features = ["serde"]}
 arboard = "3.6.0"
 totp-rs = { version = "5.7", features = ["serde_support", "gen_secret"] }
 slauth = "0.7.15"
-zeroize = { version = "1.6", features = ["derive"] }
 url = "2.5"
-base32 = "0.5"
 
 [dev-dependencies]
 walkdir = "2.4"

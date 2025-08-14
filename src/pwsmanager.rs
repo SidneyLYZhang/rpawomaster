@@ -18,6 +18,7 @@ use serde::{Serialize, Deserialize};
 use bincode::serde::{encode_into_slice, decode_from_slice};
 use bincode::config::standard;
 use crate::passgen::Capitalization;
+use crate::xotp::XOTP;
 
 // 密码生成策略配置
 #[derive(Serialize, Deserialize, Clone, Debug, bincode::Encode, bincode::Decode)]
@@ -81,6 +82,13 @@ impl PasswordEntry {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OtpEntry {
+    pub id: Uuid,
+    pub secretdata: XOTP,
+    pub created_at: DateTime<Utc>,
+}
+
 // 索引类型枚举
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Debug)]
 enum IndexType {
@@ -96,6 +104,7 @@ pub struct PasswordManager {
 impl PasswordManager {
     const PASSWORDS_TREE: &'static str = "passwords";
     const INDEX_TREE: &'static str = "index";
+    const XOTP_TREE: &'static str = "xotp";
 
     /// 初始化密码管理器
     pub fn new(db_path: &str) -> Result<Self, sled::Error> {
@@ -323,6 +332,20 @@ impl PasswordManager {
         }
     }
 
+    // 获取UUID对应的PasswordEntry
+    pub fn get_password_entry(
+        &self,
+        id: Uuid,
+    ) -> Result<PasswordEntry, Box<dyn std::error::Error>> {
+        let passwords_tree = self.db.open_tree(Self::PASSWORDS_TREE)?;
+        if let Some(entry) = passwords_tree.get(id.as_bytes())? {
+            let entry: PasswordEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
+            Ok(entry)
+        } else {
+            Err("No PasswordEntry found for the given UUID".into())
+        }
+    }
+
     // 更新索引（内部方法）
     fn update_index(
         &self,
@@ -349,4 +372,49 @@ impl PasswordManager {
         
         Ok(())
     }
+
+    /// 添加OTP
+    pub fn add_otp(
+        &self,
+        id: Uuid,
+        otp: XOTP,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let xotp_tree = self.db.open_tree(Self::XOTP_TREE)?;
+        let otp_entry = OtpEntry {
+            id: id.clone(),
+            secretdata: otp,
+            created_at: Utc::now(),
+        };
+        let serialized = bincode::serde::encode_to_vec(&otp_entry, standard())?;
+        xotp_tree.insert(id.clone(), serialized.as_slice())?;
+        Ok(())
+    }
+
+    /// List OTP
+    pub fn list_otp(
+        &self,
+    ) -> Result<Vec<OtpEntry>, Box<dyn std::error::Error>> {
+        let xotp_tree = self.db.open_tree(Self::XOTP_TREE)?;
+        let mut entries = Vec::new();
+        for record in xotp_tree.iter() {
+            let (_, value) = record?;
+            let entry: OtpEntry = bincode::serde::decode_from_slice(&value, standard())?.0;
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
+
+    /// 获取OTP
+    pub fn get_otp(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<XOTP>, Box<dyn std::error::Error>> {
+        let xotp_tree = self.db.open_tree(Self::XOTP_TREE)?;
+        if let Some(entry) = xotp_tree.get(id.as_bytes())? {
+            let otp_entry: OtpEntry = bincode::serde::decode_from_slice(&entry, standard())?.0;
+            Ok(Some(otp_entry.secretdata))
+        } else {
+            Ok(None)
+        }
+    } 
 }

@@ -1882,14 +1882,12 @@ dependencies = [
 
 [[package]]
 name = "rpawomaster"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
  "anyhow",
  "arboard",
- "base32",
- "base64",
  "bincode",
  "cbc",
  "chrono",
@@ -1918,7 +1916,6 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
- "zeroize",
  "zxcvbn",
 ]
 
@@ -3002,20 +2999,6 @@ name = "zeroize"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
-dependencies = [
- "zeroize_derive",
-]
-
-[[package]]
-name = "zeroize_derive"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce36e65b0d2999d2aafac989fb249189a141aee1f53c612c1f37d72631959f69"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "zerotrie"
