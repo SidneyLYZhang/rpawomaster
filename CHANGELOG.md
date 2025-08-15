@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.0]
+
+### Added
+- 新增完整的HOTP/TOTP双因素认证功能，支持Google Authenticator标准
+- 添加一键安装脚本（install.ps1），支持Windows系统自动配置环境变量
+- 新增多平台构建和发布工作流，支持Windows、Linux、macOS自动构建
+- 添加OTP URI解析功能，支持从二维码文本导入OTP配置
+- 新增剪贴板守护进程功能，支持敏感信息自动清除
+- 添加密码软删除功能，允许标记密码为已删除而非永久删除
+- 新增密码过期天数设置功能，可自定义密码有效期
+- 添加用户和保险库过滤选项，支持更精确的密码列表查询
+- 新增测试命令，支持文本加密和解密功能测试
+
+### Changed
+- 重构加密和解密方法，支持目标路径参数并优化目录处理
+- 重构密码生成逻辑，优化随机和记忆密码生成策略
+- 改进密钥对保存和读取功能，增强密钥管理安全性
+- 更新配置文件结构，将metadata.json改为隐藏文件.metadata.json
+- 重构命令行界面，统一密码输入和确认流程
+- 优化错误处理机制，提供更详细的错误信息
+
+### Fixed
+- 解决密码更新功能的逻辑错误
+- 修复搜索功能中的查询问题
+- 修正文档中的作者拼写错误
+
+### Security
+- 强化OTP密钥的安全存储机制
+- 改进私钥加密保护，增强密钥文件安全性
+- 优化敏感信息的内存管理和清除策略
+
+### Documentation
+- 添加完整的英文版README文档（README_EN.md）
+- 更新安装指南，添加Cargo安装方式说明
+- 完善使用方法和功能说明，提供更清晰的示例
+- 添加zread.ai项目链接和相关文档
+
 ## [v0.1.8]
 
 ### Added
