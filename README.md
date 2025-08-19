@@ -1,5 +1,7 @@
 # RPaWoMaster
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/SidneyLYZhang/rpawomaster)
+
 [English](README_EN.md) | 中文
 
 之前使用python写了一个密码管理器，但是不是每个同事都有python，所以一直计划着写个新的通用性更强的版本。

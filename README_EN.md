@@ -1,5 +1,7 @@
 # RPaWoMaster
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/SidneyLYZhang/rpawomaster)
+
 English | [中文](README.md)
 
 I previously wrote a password manager in Python, but not every colleague had Python installed, so I always planned to create a new version with better universality.
