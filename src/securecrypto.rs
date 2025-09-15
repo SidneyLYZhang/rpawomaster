@@ -38,7 +38,7 @@ type Aes256CbcEnc = Encryptor<Aes256>;
 type Aes256CbcDec = Decryptor<Aes256>;
 
 const EXTENSION: &str = "esz";
-const RSA_KEY_SIZE: usize = 2048;
+const RSA_KEY_SIZE: usize = 4096;
 
 pub struct SecureCrypto {
     private_key: RsaPrivateKey,
