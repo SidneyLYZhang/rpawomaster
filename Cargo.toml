@@ -1,6 +1,6 @@
 [package]
 name = "rpawomaster"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2024"
 authors = ["Sidney Zhang <zly@lyzhang.me>"]
 description = "A secure password manager written in Rust"

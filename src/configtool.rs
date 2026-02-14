@@ -11,22 +11,15 @@
 //
 // Config Tools
 
-use rand::{RngCore, rngs::OsRng};
-use hmac::Hmac;
-use hex::encode;
-use aes_gcm::{Aes256Gcm, AeadInPlace, KeyInit, Nonce};
-
 use serde::{Serialize, Deserialize};
 use serde_json;
 use std::{fs, path::{Path, PathBuf}};
 use dirs::config_dir;
 use chrono::{DateTime, Utc};
-use pbkdf2::pbkdf2;
-use sha2::Sha256;
 use std::{fmt, io::{self, Write}};
 use rpassword::read_password;
 
-use crate::securecrypto::generate_rsa_keypair;
+use crate::securecrypto::{generate_rsa_keypair, encrypt_private_key, decrypt_private_key};
 use crate::passgen::assess_password_strength;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -290,75 +283,6 @@ pub fn check_user_exist(username: &str) -> Result<bool, String> {
     let config_dir = get_config_dir()?;
     let config_file_path = config_dir.join(format!("{}.json", username));
     Ok(config_file_path.exists())
-}
-
-/// 加密私钥
-pub fn encrypt_private_key(private_key: &str, core_password: &str) -> Result<String, String> {
-    // 生成随机盐和nonce
-    let mut salt = [0u8; 16];
-    let mut nonce_bytes = [0u8; 12];
-    let mut rng = OsRng;
-    let _ = rng.try_fill_bytes(&mut salt);
-    let _ = rng.try_fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
-    // 使用PBKDF2派生密钥
-    let mut key = [0u8; 32];
-    pbkdf2::<Hmac<Sha256>>(
-        core_password.as_bytes(),
-        &salt,
-        100000,
-        &mut key
-    );
-
-    // 加密私钥
-    let cipher = Aes256Gcm::new(&key.into());
-    let mut data = private_key.as_bytes().to_vec();
-    cipher.encrypt_in_place(nonce, b"", &mut data)
-        .map_err(|e| format!("Encryption failed: {}", e))?;
-    let ciphertext = data;
-
-    // 组合盐、nonce和密文并编码为hex
-    let mut result = Vec::new();
-    result.extend_from_slice(&salt);
-    result.extend_from_slice(&nonce_bytes);
-    result.extend_from_slice(&ciphertext);
-    Ok(encode(&result))
-}
-
-/// 解密私钥
-pub fn decrypt_private_key(encrypted_private_key: &str, core_password: &str) -> Result<String, String> {
-    // 解码hex字符串
-    let data = hex::decode(encrypted_private_key)
-        .map_err(|e| format!("Failed to decode encrypted private key: {}", e))?;
-    
-    // 检查数据长度
-    if data.len() < 16 + 12 {
-        return Err("Encrypted private key is too short - must contain at least salt (16 bytes) and nonce (12 bytes)".to_string());
-    }
-    
-    // 提取盐、nonce和密文
-    let (salt, rest) = data.split_at(16);
-    let (nonce_bytes, ciphertext) = rest.split_at(12);
-    let nonce = Nonce::from_slice(nonce_bytes);
-    
-    // 派生密钥
-    let mut key = [0u8; 32];
-    pbkdf2::<Hmac<Sha256>>(
-        core_password.as_bytes(),
-        salt,
-        100000,
-        &mut key
-    );
-    
-    // 解密
-    let cipher = Aes256Gcm::new(&key.into());
-    let mut decrypted_data = ciphertext.to_vec();
-    cipher.decrypt_in_place(nonce, b"", &mut decrypted_data)
-        .map_err(|e| format!("Decryption failed (invalid password?): {}", e))?;
-    
-    String::from_utf8(decrypted_data)
-        .map_err(|e| format!("Invalid UTF-8 in decrypted private key: {}", e))
 }
 
 /// 获取用户名，如果提供了user参数则直接使用，否则提示用户输入

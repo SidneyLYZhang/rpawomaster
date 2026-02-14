@@ -507,3 +507,67 @@ pub fn read_keypair(path: &Path) -> Result<(String, String), String> {
         .map_err(|e| format!("Failed to read public key: {}", e))?;
     Ok((private_key, public_key))
 }
+
+use hmac::Hmac;
+use hex::encode;
+use aes_gcm::{Aes256Gcm, AeadInPlace, KeyInit, Nonce};
+use pbkdf2::pbkdf2;
+use sha2::Sha256;
+
+pub fn encrypt_private_key(private_key: &str, core_password: &str) -> Result<String, String> {
+    let mut salt = [0u8; 16];
+    let mut nonce_bytes = [0u8; 12];
+    let mut rng = OsRng;
+    let _ = rng.try_fill_bytes(&mut salt);
+    let _ = rng.try_fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let mut key = [0u8; 32];
+    pbkdf2::<Hmac<Sha256>>(
+        core_password.as_bytes(),
+        &salt,
+        100000,
+        &mut key
+    );
+
+    let cipher = Aes256Gcm::new(&key.into());
+    let mut data = private_key.as_bytes().to_vec();
+    cipher.encrypt_in_place(nonce, b"", &mut data)
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+    let ciphertext = data;
+
+    let mut result = Vec::new();
+    result.extend_from_slice(&salt);
+    result.extend_from_slice(&nonce_bytes);
+    result.extend_from_slice(&ciphertext);
+    Ok(encode(&result))
+}
+
+pub fn decrypt_private_key(encrypted_private_key: &str, core_password: &str) -> Result<String, String> {
+    let data = hex::decode(encrypted_private_key)
+        .map_err(|e| format!("Failed to decode encrypted private key: {}", e))?;
+    
+    if data.len() < 16 + 12 {
+        return Err("Encrypted private key is too short - must contain at least salt (16 bytes) and nonce (12 bytes)".to_string());
+    }
+    
+    let (salt, rest) = data.split_at(16);
+    let (nonce_bytes, ciphertext) = rest.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    
+    let mut key = [0u8; 32];
+    pbkdf2::<Hmac<Sha256>>(
+        core_password.as_bytes(),
+        salt,
+        100000,
+        &mut key
+    );
+    
+    let cipher = Aes256Gcm::new(&key.into());
+    let mut decrypted_data = ciphertext.to_vec();
+    cipher.decrypt_in_place(nonce, b"", &mut decrypted_data)
+        .map_err(|e| format!("Decryption failed (invalid password?): {}", e))?;
+    
+    String::from_utf8(decrypted_data)
+        .map_err(|e| format!("Invalid UTF-8 in decrypted private key: {}", e))
+}

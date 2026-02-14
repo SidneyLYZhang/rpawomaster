@@ -17,3 +17,4 @@ pub mod passgen;
 pub mod securecrypto;
 pub mod setclip;
 pub mod xotp;
+pub mod commands;
