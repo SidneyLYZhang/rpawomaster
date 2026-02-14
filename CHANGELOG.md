@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.2]
+
+### Changed
+- 重构项目架构，新增 `commands` 模块拆分业务逻辑，将 main.rs 从 ~1400 行精简至 ~380 行
+- 将 `encrypt_private_key` 和 `decrypt_private_key` 函数从 configtool.rs 移至 securecrypto.rs，统一加密功能管理
+- 移除重复的 `GenArgs` 结构体，优化命令行参数定义
+
+### Security
+- 将 RSA 密钥大小从 2048 位增加到 4096 位，显著提升加密安全性
+
+### Documentation
+- 更新 README 文档内容
+
 ## [v0.2.0]
 
 ### Added
